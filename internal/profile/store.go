@@ -487,7 +487,10 @@ func syncTree(root string) error {
 		if err != nil || info.IsDir() {
 			return err
 		}
-		f, err := os.Open(path)
+		// Opened read-write because Windows' FlushFileBuffers (what
+		// File.Sync calls) requires a write-capable handle; a read-only
+		// os.Open succeeds but Sync() then fails with "Access is denied".
+		f, err := os.OpenFile(path, os.O_RDWR, 0)
 		if err != nil {
 			return err
 		}
