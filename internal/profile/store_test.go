@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -59,6 +60,9 @@ func TestRestoreRefusesUnsafePermissionsAndIntegrityMismatchBeforeMutation(t *te
 		mutate func(*testing.T, *Store)
 	}{
 		{"unsafe permissions", func(t *testing.T, s *Store) {
+			if runtime.GOOS == "windows" {
+				t.Skip("Windows has no POSIX mode bits to make unsafe")
+			}
 			if err := os.Chmod(filepath.Join(s.profileDir("work"), cookiesFile), 0644); err != nil {
 				t.Fatal(err)
 			}
@@ -306,6 +310,9 @@ func mustWriteMeta(t *testing.T, path string, meta Meta) {
 
 func assertMode(t *testing.T, path string, want os.FileMode) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		return
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
