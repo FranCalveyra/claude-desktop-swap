@@ -6,9 +6,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Version is set at build time via -ldflags.
+var Version = "dev"
+
 var root = &cobra.Command{
-	Use:   "claude-desktop-swap",
-	Short: "Switch between Claude Desktop accounts without logging out",
+	Use:     "claude-desktop-swap",
+	Short:   "Switch between Claude Desktop accounts without logging out",
+	Version: Version,
 }
 
 func Execute() {

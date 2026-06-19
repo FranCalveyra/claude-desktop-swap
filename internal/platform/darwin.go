@@ -3,6 +3,8 @@
 package platform
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,12 +12,15 @@ import (
 )
 
 const (
-	appName          = "Claude"
-	appDataDir       = "Application Support"
-	killPollInterval = 100 * time.Millisecond
-	killMaxPolls     = 50 // 50 × 100ms = 5 second timeout before SIGKILL
-	killForceDelay   = 300 * time.Millisecond
+	appName              = "Claude"
+	appDataDir           = "Application Support"
+	killPollInterval     = 100 * time.Millisecond
+	killMaxPolls         = 50 // 50 × 100ms = 5 second timeout before SIGKILL
+	killForceDelay       = 300 * time.Millisecond
+	claudeProcessPattern = `/Applications/Claude.app/Contents/MacOS/Claude|Claude Helper`
 )
+
+var errProcessAbsent = errors.New("process absent")
 
 type darwinPlatform struct{}
 
@@ -30,38 +35,46 @@ func (d *darwinPlatform) AppDataPath() (string, error) {
 }
 
 func (d *darwinPlatform) IsRunning() (bool, error) {
-	err := exec.Command("pgrep", "-x", appName).Run()
-	if err != nil {
-		if _, ok := err.(*exec.ExitError); ok {
-			return false, nil
-		}
-		return false, err
+	err := runProcessCommand("pgrep", "-f", claudeProcessPattern)
+	if errors.Is(err, errProcessAbsent) {
+		return false, nil
 	}
-	return true, nil
+	return err == nil, err
 }
 
 func (d *darwinPlatform) KillApp() error {
-	running, err := d.IsRunning()
-	if err != nil || !running {
-		return err
-	}
-
-	exec.Command("pkill", "-TERM", "-x", appName).Run() //nolint:errcheck
-
-	for range killMaxPolls {
-		time.Sleep(killPollInterval)
-		running, _ := d.IsRunning()
-		if !running {
-			return nil
-		}
-	}
-
-	// SIGTERM wasn't enough after 5 seconds — force it
-	exec.Command("pkill", "-KILL", "-x", appName).Run() //nolint:errcheck
-	time.Sleep(killForceDelay)
-	return nil
+	return stopClaudeProcesses(runProcessCommand, time.Sleep, killMaxPolls)
 }
 
 func (d *darwinPlatform) LaunchApp() error {
 	return exec.Command("open", "-a", appName).Run()
+}
+
+func runProcessCommand(name string, args ...string) error {
+	err := exec.Command(name, args...).Run()
+	if _, ok := err.(*exec.ExitError); ok {
+		return errProcessAbsent
+	}
+	return err
+}
+
+func stopClaudeProcesses(run func(string, ...string) error, sleep func(time.Duration), polls int) error {
+	if err := run("pgrep", "-f", claudeProcessPattern); errors.Is(err, errProcessAbsent) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	_ = run("pkill", "-TERM", "-f", claudeProcessPattern)
+	for range polls {
+		sleep(killPollInterval)
+		if err := run("pgrep", "-f", claudeProcessPattern); errors.Is(err, errProcessAbsent) {
+			return nil
+		}
+	}
+	_ = run("pkill", "-KILL", "-f", claudeProcessPattern)
+	sleep(killForceDelay)
+	if err := run("pgrep", "-f", claudeProcessPattern); errors.Is(err, errProcessAbsent) {
+		return nil
+	}
+	return fmt.Errorf("Claude Desktop processes remain after forced termination")
 }

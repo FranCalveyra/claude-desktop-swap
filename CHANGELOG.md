@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-06-19
+
+### Added
+- Local profile health states (`usable`, `expired`, `missing`, and `unknown`) based on non-secret SQLite evidence.
+- Cookie-only v2 profiles with integrity metadata, secure permissions, atomic generation recovery, and compatible v1 reads.
+
+### Changed
+- Switching now fully stops Claude and its helpers, checkpoints the outgoing profile before restoration, replaces live Cookies atomically, and advances tracking only after commit.
+- `save --force` now refuses to snapshot an open database; all saves require Claude to be stopped.
+- Local Storage, IndexedDB, and Session Storage are cleared as volatile caches instead of stored in profiles; global and machine data remain untouched.
+
+### Fixed
+- Refreshed outgoing cookies are no longer discarded during repeated account switches.
+- Interrupted profile writes and live-cookie replacement retain a recoverable prior generation.
+
+## [0.3.0]
+
 ### Added
 - `add <name>` command — snapshots your current session, gives Claude Desktop a clean slate to log into a new account, then snapshots that new session. Removes the manual logout/login dance for adding accounts.
 

@@ -27,8 +27,8 @@ var cmdSave = &cobra.Command{
 		}
 		if running {
 			force, _ := cmd.Flags().GetBool("force")
-			if !force {
-				return fmt.Errorf("Claude Desktop is running — local storage snapshot may be inconsistent\nQuit Claude first, or use --force to snapshot anyway")
+			if err := validateSaveState(running, force); err != nil {
+				return err
 			}
 		}
 
@@ -37,17 +37,8 @@ var cmdSave = &cobra.Command{
 			return err
 		}
 
-		if err := store.Save(name, appData); err != nil {
+		if err := store.Checkpoint(name, appData); err != nil {
 			return err
-		}
-
-		// Prime the on-disk state so the next `use <other>` switches cleanly.
-		// Skipped when --force was used (Claude is still running and reading
-		// the files we'd be wiping).
-		if !running {
-			if err := store.Restore(name, appData); err != nil {
-				return fmt.Errorf("post-save cleanup: %w", err)
-			}
 		}
 
 		fmt.Printf("Profile %q saved.\n", name)
@@ -55,6 +46,13 @@ var cmdSave = &cobra.Command{
 	},
 }
 
+func validateSaveState(running, force bool) error {
+	if running {
+		return fmt.Errorf("Claude Desktop is running; quit it before saving so Cookies can be checkpointed safely")
+	}
+	return nil
+}
+
 func init() {
-	cmdSave.Flags().Bool("force", false, "snapshot even if Claude Desktop is running")
+	cmdSave.Flags().Bool("force", false, "deprecated; saving while Claude Desktop is running is refused")
 }

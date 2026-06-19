@@ -48,11 +48,8 @@ new session as <name>. No manual logout required.`,
 
 		if profile.HasActiveSession(appData) {
 			current, _ := store.Current()
-			if current == "" {
-				return fmt.Errorf("you have an active session but no profile is tracked as current — run 'save <name>' first so it isn't lost")
-			}
 			fmt.Printf("Snapshotting current session as %q...\n", current)
-			if err := store.Save(current, appData); err != nil {
+			if err := checkpointTrackedSession(store, appData); err != nil {
 				return fmt.Errorf("snapshot current: %w", err)
 			}
 		}
@@ -75,7 +72,7 @@ new session as <name>. No manual logout required.`,
 			return err
 		}
 
-		if err := store.Save(name, appData); err != nil {
+		if err := store.Checkpoint(name, appData); err != nil {
 			return err
 		}
 		if err := store.Restore(name, appData); err != nil {
@@ -85,4 +82,17 @@ new session as <name>. No manual logout required.`,
 		fmt.Printf("Profile %q saved.\n", name)
 		return nil
 	},
+}
+
+type trackedCheckpointer interface {
+	Current() (string, error)
+	Checkpoint(string, string) error
+}
+
+func checkpointTrackedSession(store trackedCheckpointer, appData string) error {
+	current, _ := store.Current()
+	if current == "" {
+		return fmt.Errorf("active session has no tracked profile; save it before continuing")
+	}
+	return store.Checkpoint(current, appData)
 }

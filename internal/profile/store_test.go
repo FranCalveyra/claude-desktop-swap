@@ -1,401 +1,287 @@
 package profile
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
-// idbOriginDir mimics the per-origin subdirectory Chromium creates inside
-// IndexedDB/. The exact name isn't part of our contract; we just need a
-// realistic shape so copyDir has something nested to walk.
-const idbOriginDir = "https_claude.ai_0.indexeddb.leveldb"
-
-func TestSaveAndRestore(t *testing.T) {
-	appData := t.TempDir()
-	setupFakeAppData(t, appData)
-
+func TestCheckpointCreatesMinimalSecureV2Profile(t *testing.T) {
+	appData := syntheticAppData(t, "live")
 	store := newTestStore(t)
-
-	if err := store.Save("test", appData); err != nil {
-		t.Fatalf("Save: %v", err)
+	if err := store.Checkpoint("work", appData); err != nil {
+		t.Fatalf("Checkpoint: %v", err)
 	}
 
-	if !store.Exists("test") {
-		t.Fatal("profile should exist after save")
-	}
-
-	// Simulate a session change
-	mustWriteFile(t, filepath.Join(appData, cookiesFile), "new-session")
-
-	if err := store.Restore("test", appData); err != nil {
-		t.Fatalf("Restore: %v", err)
-	}
-
-	got, err := os.ReadFile(filepath.Join(appData, cookiesFile))
+	entries, err := os.ReadDir(store.profileDir("work"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != "fake-cookies" {
-		t.Errorf("Cookies = %q, want %q", got, "fake-cookies")
+	if len(entries) != 2 || entries[0].Name() != cookiesFile || entries[1].Name() != metaFile {
+		t.Fatalf("profile artifacts = %v, want only Cookies and meta.json", entryNames(entries))
+	}
+	assertMode(t, store.profileDir("work"), dirPerm)
+	assertMode(t, filepath.Join(store.profileDir("work"), cookiesFile), filePerm)
+	assertMode(t, filepath.Join(store.profileDir("work"), metaFile), filePerm)
+	meta, err := store.loadMeta("work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.FormatVersion != 2 || meta.ObservedHealth != HealthUsable || meta.CookieDigest == "" || meta.SavedAt.IsZero() {
+		t.Fatalf("incomplete v2 metadata: %+v", meta)
 	}
 }
 
-func TestRestoreClearsJournal(t *testing.T) {
-	appData := t.TempDir()
-	setupFakeAppData(t, appData)
-
+func TestCheckpointRefusesUnusableLiveStateWithoutOverwritingProfile(t *testing.T) {
 	store := newTestStore(t)
-	store.Save("test", appData) //nolint:errcheck
-
-	// Simulate a stale journal left by a previous Claude session
-	journal := filepath.Join(appData, cookiesJournalFile)
-	mustWriteFile(t, journal, "stale-journal")
-
-	if err := store.Restore("test", appData); err != nil {
-		t.Fatalf("Restore: %v", err)
+	healthy := syntheticAppData(t, "healthy")
+	if err := store.Checkpoint("work", healthy); err != nil {
+		t.Fatal(err)
 	}
+	before, _ := cookieDigest(filepath.Join(store.profileDir("work"), cookiesFile))
 
-	if _, err := os.Stat(journal); !os.IsNotExist(err) {
-		t.Error("Cookies-journal should be removed after restore")
+	unusable := t.TempDir()
+	createCookiesDB(t, filepath.Join(unusable, cookiesFile), ".claude.ai", "other", 0)
+	if err := store.Checkpoint("work", unusable); err == nil {
+		t.Fatal("Checkpoint should reject missing session evidence")
+	}
+	after, _ := cookieDigest(filepath.Join(store.profileDir("work"), cookiesFile))
+	if after != before {
+		t.Fatal("unusable live state overwrote the saved usable profile")
 	}
 }
 
-func TestRestoreReplacesAllSessionArtifacts(t *testing.T) {
-	appData := t.TempDir()
-	setupFakeAppData(t, appData)
+func TestRestoreRefusesUnsafePermissionsAndIntegrityMismatchBeforeMutation(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, *Store)
+	}{
+		{"unsafe permissions", func(t *testing.T, s *Store) {
+			if err := os.Chmod(filepath.Join(s.profileDir("work"), cookiesFile), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"digest mismatch", func(t *testing.T, s *Store) {
+			path := filepath.Join(s.profileDir("work"), cookiesFile)
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			createCookiesDB(t, path, ".claude.ai", "sessionKey", 0)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newTestStore(t)
+			appData := syntheticAppData(t, "saved")
+			if err := store.Checkpoint("work", appData); err != nil {
+				t.Fatal(err)
+			}
+			live := syntheticAppData(t, "live-before")
+			before, _ := cookieDigest(filepath.Join(live, cookiesFile))
+			tt.mutate(t, store)
+			if err := store.Restore("work", live); err == nil {
+				t.Fatal("Restore should refuse invalid profile")
+			}
+			after, _ := cookieDigest(filepath.Join(live, cookiesFile))
+			if after != before {
+				t.Fatal("live Cookies changed before validation completed")
+			}
+		})
+	}
+}
 
+func TestHealthyV1RestoresAndMigratesOnlyOnCheckpoint(t *testing.T) {
 	store := newTestStore(t)
-	if err := store.Save("test", appData); err != nil {
-		t.Fatalf("Save: %v", err)
+	v1 := store.profileDir("legacy")
+	if err := os.MkdirAll(filepath.Join(v1, "leveldb"), dirPerm); err != nil {
+		t.Fatal(err)
+	}
+	createCookiesDB(t, filepath.Join(v1, cookiesFile), ".claude.ai", "sessionKey", 0)
+	mustWriteFile(t, filepath.Join(v1, "leveldb", "legacy"), "keep-until-commit")
+	mustWriteMeta(t, filepath.Join(v1, metaFile), Meta{Name: "legacy", CreatedAt: time.Now()})
+	live := syntheticAppData(t, "other")
+
+	if err := store.Restore("legacy", live); err != nil {
+		t.Fatalf("restore v1: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(v1, "leveldb", "legacy")); err != nil {
+		t.Fatal("restore eagerly migrated v1")
+	}
+	if err := store.Checkpoint("legacy", live); err != nil {
+		t.Fatalf("checkpoint migrated v1: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(v1, "leveldb")); !os.IsNotExist(err) {
+		t.Fatal("legacy payload remains after v2 commit")
+	}
+	meta, _ := store.loadMeta("legacy")
+	if meta.FormatVersion != 2 {
+		t.Fatalf("format version = %d", meta.FormatVersion)
+	}
+}
+
+func TestUnusableV1IsNotRepaired(t *testing.T) {
+	store := newTestStore(t)
+	v1 := store.profileDir("expired")
+	if err := os.MkdirAll(v1, dirPerm); err != nil {
+		t.Fatal(err)
+	}
+	createCookiesDB(t, filepath.Join(v1, cookiesFile), ".claude.ai", "sessionKey", chromiumTime(store.now().Add(-time.Hour)))
+	live := syntheticAppData(t, "live")
+	if err := store.Restore("expired", live); err == nil {
+		t.Fatal("expired v1 should require reauthentication")
+	}
+	meta, _ := store.loadMeta("expired")
+	if meta.FormatVersion == 2 {
+		t.Fatal("expired v1 was synthesized as v2")
+	}
+}
+
+func TestStoreRecoversBackupAndRemovesOrphanStage(t *testing.T) {
+	base := t.TempDir()
+	profiles := filepath.Join(base, profilesDirName)
+	backup := filepath.Join(profiles, ".work.backup")
+	stage := filepath.Join(profiles, ".work.stage-dead")
+	if err := os.MkdirAll(backup, dirPerm); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stage, dirPerm); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, filepath.Join(backup, metaFile), `{}`)
+	store, err := newStore(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !store.Exists("work") {
+		t.Fatal("backup was not recovered")
+	}
+	if _, err := os.Stat(stage); !os.IsNotExist(err) {
+		t.Fatal("orphan stage was not removed")
+	}
+}
+
+func TestRestoreReplacesCookiesClearsVolatileAndPreservesGlobalState(t *testing.T) {
+	store := newTestStore(t)
+	saved := syntheticAppData(t, "saved")
+	if err := store.Checkpoint("work", saved); err != nil {
+		t.Fatal(err)
+	}
+	live := syntheticAppData(t, "live")
+	for _, name := range []string{cookiesJournalFile, cookiesWALFile, cookiesSHMFile} {
+		mustWriteFile(t, filepath.Join(live, name), "stale")
+	}
+	global := map[string]string{"config.json": "global", "WebStorage/state": "web", "partitions/p": "partition", deviceIDFile: "machine"}
+	for path, content := range global {
+		mustWriteFile(t, filepath.Join(live, path), content)
 	}
 
-	// Simulate switching profiles: every per-account artifact now belongs to a different session.
-	for path, content := range map[string]string{
-		filepath.Join(appData, cookiesFile):                              "other-cookies",
-		filepath.Join(appData, deviceIDFile):                             "other-device",
-		filepath.Join(appData, indexedDBDir, idbOriginDir, "000001.log"): "other-idb",
-		filepath.Join(appData, sessionStorageDir, "000001.log"):          "other-ss",
-	} {
-		mustWriteFile(t, path, content)
-	}
-
-	if err := store.Restore("test", appData); err != nil {
+	if err := store.Restore("work", live); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
-
-	// Cookies and device ID must be restored from the profile.
-	for path, want := range map[string]string{
-		filepath.Join(appData, cookiesFile):  "fake-cookies",
-		filepath.Join(appData, deviceIDFile): "fake-device-id",
-	} {
-		got, err := os.ReadFile(path)
-		if err != nil {
-			t.Errorf("read %s: %v", path, err)
-			continue
-		}
-		if string(got) != want {
-			t.Errorf("%s = %q, want %q", path, got, want)
-		}
-	}
-
-	// IndexedDB and Session Storage must be wiped so Claude rebuilds them
-	// from cookies — restoring stale cached auth causes token conflicts.
-	for _, path := range []string{
-		filepath.Join(appData, indexedDBDir),
-		filepath.Join(appData, sessionStorageDir),
-	} {
+	for _, path := range []string{filepath.Join(live, localStorageDir, leveldbDir), filepath.Join(live, indexedDBDir), filepath.Join(live, sessionStorageDir)} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
-			t.Errorf("%s should be removed after restore", path)
+			t.Fatalf("volatile path remains: %s", path)
+		}
+	}
+	for _, name := range []string{cookiesJournalFile, cookiesWALFile, cookiesSHMFile} {
+		if _, err := os.Stat(filepath.Join(live, name)); !os.IsNotExist(err) {
+			t.Fatalf("sidecar remains: %s", name)
+		}
+	}
+	for path, want := range global {
+		got, err := os.ReadFile(filepath.Join(live, path))
+		if err != nil || string(got) != want {
+			t.Fatalf("global %s changed: %q %v", path, got, err)
 		}
 	}
 }
 
-func TestRestoreNonexistent(t *testing.T) {
+func TestRestoreTrackingFailureRollsBackCookies(t *testing.T) {
 	store := newTestStore(t)
-	if err := store.Restore("ghost", t.TempDir()); err == nil {
-		t.Fatal("restoring nonexistent profile should error")
+	saved := syntheticAppData(t, "saved")
+	if err := store.Checkpoint("work", saved); err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestList(t *testing.T) {
-	appData := t.TempDir()
-	setupFakeAppData(t, appData)
-
-	store := newTestStore(t)
-	store.Save("alpha", appData) //nolint:errcheck
-	store.Save("beta", appData)  //nolint:errcheck
-
-	profiles, err := store.List()
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(profiles) != 2 {
-		t.Errorf("got %d profiles, want 2", len(profiles))
-	}
-}
-
-func TestListEmpty(t *testing.T) {
-	store := newTestStore(t)
-	profiles, err := store.List()
-	if err != nil {
-		t.Fatalf("List on empty store: %v", err)
-	}
-	if len(profiles) != 0 {
-		t.Errorf("expected empty list, got %d", len(profiles))
-	}
-}
-
-func TestDelete(t *testing.T) {
-	appData := t.TempDir()
-	setupFakeAppData(t, appData)
-
-	store := newTestStore(t)
-	store.Save("temp", appData) //nolint:errcheck
-
-	if err := store.Delete("temp"); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-	if store.Exists("temp") {
-		t.Fatal("profile should not exist after delete")
-	}
-}
-
-func TestDeleteNonexistent(t *testing.T) {
-	store := newTestStore(t)
-	if err := store.Delete("ghost"); err == nil {
-		t.Fatal("deleting nonexistent profile should error")
-	}
-}
-
-func TestDeleteClearsCurrent(t *testing.T) {
-	appData := t.TempDir()
-	setupFakeAppData(t, appData)
-
-	store := newTestStore(t)
-	store.Save("active", appData) //nolint:errcheck
-	store.SetCurrent("active")    //nolint:errcheck
-	store.Delete("active")        //nolint:errcheck
-
-	current, _ := store.Current()
-	if current == "active" {
-		t.Error("current should be cleared after deleting the active profile")
-	}
-}
-
-func TestSetAndGetCurrent(t *testing.T) {
-	store := newTestStore(t)
-
-	if err := store.SetCurrent("work"); err != nil {
-		t.Fatalf("SetCurrent: %v", err)
-	}
-
-	got, err := store.Current()
-	if err != nil {
-		t.Fatalf("Current: %v", err)
-	}
-	if got != "work" {
-		t.Errorf("Current = %q, want %q", got, "work")
-	}
-}
-
-func TestSavePreservesCreatedAt(t *testing.T) {
-	appData := t.TempDir()
-	setupFakeAppData(t, appData)
-
-	store := newTestStore(t)
-	store.Save("p", appData) //nolint:errcheck
-
-	first, _ := store.loadMeta("p")
-	store.Save("p", appData) //nolint:errcheck
-	second, _ := store.loadMeta("p")
-
-	if !first.CreatedAt.Equal(second.CreatedAt) {
-		t.Error("re-saving should preserve the original CreatedAt")
-	}
-}
-
-func TestWipeRemovesSessionArtifacts(t *testing.T) {
-	appData := t.TempDir()
-	setupFakeAppData(t, appData)
-
-	// A non-session file should survive Wipe.
-	preferences := filepath.Join(appData, "Preferences")
-	mustWriteFile(t, preferences, "user prefs")
-
-	store := newTestStore(t)
-	if err := store.Wipe(appData); err != nil {
-		t.Fatalf("Wipe: %v", err)
-	}
-
-	for _, p := range []string{
-		filepath.Join(appData, cookiesFile),
-		filepath.Join(appData, localStorageDir, leveldbDir),
-		filepath.Join(appData, indexedDBDir),
-		filepath.Join(appData, sessionStorageDir),
-	} {
-		if _, err := os.Stat(p); !os.IsNotExist(err) {
-			t.Errorf("%s should be removed by Wipe", p)
-		}
-	}
-
-	// Preferences and the machine-bound device id stay put.
-	for _, p := range []string{
-		preferences,
-		filepath.Join(appData, deviceIDFile),
-	} {
-		if _, err := os.Stat(p); err != nil {
-			t.Errorf("%s should NOT be removed by Wipe: %v", p, err)
-		}
-	}
-}
-
-func TestWipeIdempotent(t *testing.T) {
-	appData := t.TempDir()
-	store := newTestStore(t)
-
-	if err := store.Wipe(appData); err != nil {
-		t.Errorf("Wipe on empty dir: %v", err)
-	}
-	if err := store.Wipe(appData); err != nil {
-		t.Errorf("second Wipe: %v", err)
-	}
-}
-
-func TestHasActiveSession(t *testing.T) {
-	appData := t.TempDir()
-
-	if HasActiveSession(appData) {
-		t.Error("empty dir should not report an active session")
-	}
-
-	cookies := filepath.Join(appData, cookiesFile)
-	mustWriteFile(t, cookies, "")
-	if HasActiveSession(appData) {
-		t.Error("empty Cookies file should not report an active session")
-	}
-
-	mustWriteFile(t, cookies, "real-session")
-	if !HasActiveSession(appData) {
-		t.Error("non-empty Cookies file should report an active session")
-	}
-}
-
-func TestSaveCapturesAllArtifacts(t *testing.T) {
-	appData := t.TempDir()
-	setupFakeAppData(t, appData)
-
-	store := newTestStore(t)
-	if err := store.Save("test", appData); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	profileDir := store.profileDir("test")
-	for _, p := range []string{
-		filepath.Join(profileDir, cookiesFile),
-		filepath.Join(profileDir, leveldbDir),
-		filepath.Join(profileDir, indexedDBDir),
-		filepath.Join(profileDir, sessionStorageDir),
-		filepath.Join(profileDir, deviceIDFile),
-	} {
-		if _, err := os.Stat(p); err != nil {
-			t.Errorf("%s should exist in profile dir: %v", p, err)
-		}
-	}
-}
-
-func TestSaveSkipsMissingOptionalArtifacts(t *testing.T) {
-	appData := t.TempDir()
-	// Minimal app data — only the required artifacts.
-	mustWriteFile(t, filepath.Join(appData, cookiesFile), "c")
-	mustWriteFile(t, filepath.Join(appData, localStorageDir, leveldbDir, "CURRENT"), "")
-
-	store := newTestStore(t)
-	if err := store.Save("test", appData); err != nil {
-		t.Fatalf("Save with missing optional artifacts: %v", err)
-	}
-
-	profileDir := store.profileDir("test")
-	for _, p := range []string{
-		filepath.Join(profileDir, indexedDBDir),
-		filepath.Join(profileDir, sessionStorageDir),
-		filepath.Join(profileDir, deviceIDFile),
-	} {
-		if _, err := os.Stat(p); !os.IsNotExist(err) {
-			t.Errorf("%s should not exist when source was missing", p)
-		}
-	}
-}
-
-func TestRestoreSetsCurrent(t *testing.T) {
-	appData := t.TempDir()
-	setupFakeAppData(t, appData)
-
-	store := newTestStore(t)
-	store.Save("p1", appData) //nolint:errcheck
-	store.Save("p2", appData) //nolint:errcheck
-
-	if err := store.Restore("p1", appData); err != nil {
-		t.Fatalf("Restore p1: %v", err)
-	}
-	if got, _ := store.Current(); got != "p1" {
-		t.Errorf("after Restore p1, Current = %q, want %q", got, "p1")
-	}
-
-	if err := store.Restore("p2", appData); err != nil {
-		t.Fatalf("Restore p2: %v", err)
-	}
-	if got, _ := store.Current(); got != "p2" {
-		t.Errorf("after Restore p2, Current = %q, want %q", got, "p2")
-	}
-}
-
-func TestRestoreUpdatesLastUsed(t *testing.T) {
-	appData := t.TempDir()
-	setupFakeAppData(t, appData)
-
-	store := newTestStore(t)
-	store.Save("p", appData) //nolint:errcheck
-
-	before, _ := store.loadMeta("p")
-	if !before.LastUsed.IsZero() {
-		t.Fatal("LastUsed should be zero before any Restore")
-	}
-
-	if err := store.Restore("p", appData); err != nil {
+	live := syntheticAppData(t, "live")
+	before, _ := cookieDigest(filepath.Join(live, cookiesFile))
+	if err := os.Mkdir(filepath.Join(store.baseDir, currentFileName), dirPerm); err != nil {
 		t.Fatal(err)
 	}
 
-	after, _ := store.loadMeta("p")
-	if after.LastUsed.IsZero() {
-		t.Error("LastUsed should be set after Restore")
+	if err := store.Restore("work", live); err == nil {
+		t.Fatal("Restore should fail when tracking cannot commit")
+	}
+	after, _ := cookieDigest(filepath.Join(live, cookiesFile))
+	if after != before {
+		t.Fatal("live Cookies were not rolled back")
+	}
+}
+
+func TestMatchLiveDoesNotTrustStaleCurrent(t *testing.T) {
+	store := newTestStore(t)
+	a := syntheticAppData(t, "a")
+	b := syntheticAppData(t, "b")
+	if err := store.Checkpoint("a", a); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetCurrent("a"); err != nil {
+		t.Fatal(err)
+	}
+	if name, health := store.MatchLive(b); name != "" || health != HealthUsable {
+		t.Fatalf("match = %q/%s, want unknown usable", name, health)
+	}
+	if name, health := store.MatchLive(a); name != "a" || health != HealthUsable {
+		t.Fatalf("match = %q/%s, want a/usable", name, health)
+	}
+}
+
+func TestWipePreservesMachineAndGlobalFiles(t *testing.T) {
+	store := newTestStore(t)
+	appData := syntheticAppData(t, "live")
+	for path, content := range map[string]string{deviceIDFile: "device", "config.json": "config"} {
+		mustWriteFile(t, filepath.Join(appData, path), content)
+	}
+	if err := store.Wipe(appData); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{deviceIDFile, "config.json"} {
+		if _, err := os.Stat(filepath.Join(appData, path)); err != nil {
+			t.Fatalf("%s was removed", path)
+		}
 	}
 }
 
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	base := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(base, profilesDirName), dirPerm); err != nil {
+	store, err := newStore(t.TempDir())
+	if err != nil {
 		t.Fatal(err)
 	}
-	return &Store{baseDir: base}
+	store.now = func() time.Time { return time.Date(2026, 6, 19, 12, 0, 0, 0, time.UTC) }
+	return store
 }
 
-func setupFakeAppData(t *testing.T, dir string) {
+func syntheticAppData(t *testing.T, marker string) string {
 	t.Helper()
-	lsDir := filepath.Join(dir, localStorageDir, leveldbDir)
-	idbDir := filepath.Join(dir, indexedDBDir, idbOriginDir)
-	ssDir := filepath.Join(dir, sessionStorageDir)
+	dir := t.TempDir()
+	createCookiesDBWithMarker(t, filepath.Join(dir, cookiesFile), marker)
+	for _, path := range []string{filepath.Join(localStorageDir, leveldbDir, "CURRENT"), filepath.Join(indexedDBDir, "data"), filepath.Join(sessionStorageDir, "data")} {
+		mustWriteFile(t, filepath.Join(dir, path), marker)
+	}
+	return dir
+}
 
-	for path, content := range map[string]string{
-		filepath.Join(dir, cookiesFile):     "fake-cookies",
-		filepath.Join(lsDir, "CURRENT"):     "MANIFEST-000001\n",
-		filepath.Join(lsDir, "000001.ldb"):  "fake-ldb-data",
-		filepath.Join(idbDir, "000001.log"): "fake-idb",
-		filepath.Join(ssDir, "000001.log"):  "fake-ss",
-		filepath.Join(dir, deviceIDFile):    "fake-device-id",
-	} {
-		mustWriteFile(t, path, content)
+func createCookiesDBWithMarker(t *testing.T, path, marker string) {
+	t.Helper()
+	db := openSQLite(t, path)
+	mustExec(t, db, `CREATE TABLE cookies (host_key TEXT, name TEXT, expires_utc INTEGER, value TEXT, encrypted_value BLOB)`)
+	mustExec(t, db, `CREATE TABLE fixture_marker (marker TEXT)`)
+	mustExec(t, db, `INSERT INTO cookies(host_key, name, expires_utc, value, encrypted_value) VALUES ('.claude.ai', 'sessionKey', 0, 'secret', x'0102')`)
+	mustExec(t, db, `INSERT INTO fixture_marker VALUES (?)`, marker)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -407,4 +293,32 @@ func mustWriteFile(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), filePerm); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func mustWriteMeta(t *testing.T, path string, meta Meta) {
+	t.Helper()
+	data, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, path, string(data))
+}
+
+func assertMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != want {
+		t.Fatalf("%s mode = %o, want %o", path, info.Mode().Perm(), want)
+	}
+}
+
+func entryNames(entries []os.DirEntry) []string {
+	names := make([]string, len(entries))
+	for i, entry := range entries {
+		names[i] = entry.Name()
+	}
+	return names
 }
