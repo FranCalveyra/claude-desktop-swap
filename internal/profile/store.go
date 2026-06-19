@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -462,7 +463,14 @@ func clearVolatile(appDataPath string) error {
 	return nil
 }
 
+// validateSecureTree rejects group/other-readable files. Windows has no
+// POSIX mode bits — os.FileMode there is synthesized from file attributes
+// and duplicates owner bits into group/other, so the check is meaningless;
+// Windows enforces access via ACLs instead, which this does not inspect.
 func validateSecureTree(root string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -491,7 +499,14 @@ func syncTree(root string) error {
 	return syncDir(root)
 }
 
+// syncDir fsyncs a directory's metadata so a prior rename/create is durable.
+// Windows has no equivalent: a directory handle opened read-only cannot be
+// flushed (FlushFileBuffers returns "Access is denied"), and NTFS journals
+// directory changes itself, so the fsync is unnecessary there.
 func syncDir(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	dir, err := os.Open(path)
 	if err != nil {
 		return err
