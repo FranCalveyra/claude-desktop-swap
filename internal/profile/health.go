@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -32,6 +34,17 @@ const chromiumEpochOffsetMicros int64 = 11644473600000000
 
 const inspectionTimeout = 500 * time.Millisecond
 
+// sqlitePath converts an OS path into the form net/url.URL expects for a
+// file: scheme, so a Windows drive letter (e.g. C:\Users\...) isn't parsed
+// as a URL host.
+func sqlitePath(path string) string {
+	slashed := filepath.ToSlash(path)
+	if !strings.HasPrefix(slashed, "/") {
+		slashed = "/" + slashed
+	}
+	return slashed
+}
+
 func InspectCookies(path string, now time.Time) Inspection {
 	return inspectCookiesWithTimeout(path, now, inspectionTimeout)
 }
@@ -43,7 +56,7 @@ func inspectCookiesWithTimeout(path string, now time.Time, timeout time.Duration
 		return Inspection{Health: HealthUnknown, Reason: "Cookies database cannot be inspected"}
 	}
 
-	dsn := &url.URL{Scheme: "file", Path: path}
+	dsn := &url.URL{Scheme: "file", Path: sqlitePath(path)}
 	query := dsn.Query()
 	query.Set("mode", "ro")
 	query.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", max(timeout.Milliseconds(), 1)))
