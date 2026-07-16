@@ -1,4 +1,13 @@
-# claude-desktop-swap
+<div align="center">
+  <img src="assets/claude-desktop-swap-512.png" width="160" height="160" alt="claude-desktop-swap icon">
+
+  # claude-desktop-swap
+
+  [![CI](https://github.com/FranCalveyra/claude-desktop-swap/actions/workflows/ci.yml/badge.svg)](https://github.com/FranCalveyra/claude-desktop-swap/actions/workflows/ci.yml)
+  [![Release](https://img.shields.io/github/v/release/FranCalveyra/claude-desktop-swap)](https://github.com/FranCalveyra/claude-desktop-swap/releases/latest)
+  [![Go version](https://img.shields.io/github/go-mod/go-version/FranCalveyra/claude-desktop-swap)](go.mod)
+  [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+</div>
 
 Switch between multiple Claude Desktop accounts without logging out of any of them.
 
