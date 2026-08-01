@@ -2,11 +2,16 @@ package account
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"time"
 )
+
+// ErrUnauthorized indicates the server explicitly rejected the sessionKey
+// (HTTP 401), distinct from an indeterminate failure (offline, timeout).
+var ErrUnauthorized = errors.New("session rejected by server")
 
 const (
 	orgsEndpoint    = "https://claude.ai/api/organizations"
@@ -40,7 +45,9 @@ func fetchFromAPI(sessionKey string) (Info, error) {
 	// The account holds several orgs (chat, API, ...); take the first that
 	// resolves to a subscription plan.
 	orgs, err := getJSON[[]orgResponse](orgsEndpoint, sessionKey)
-	if err == nil {
+	if errors.Is(err, ErrUnauthorized) {
+		info.Rejected = true
+	} else if err == nil {
 		for _, org := range orgs {
 			if plan := parsePlan(org); plan != "" {
 				info.Plan = plan
@@ -50,7 +57,9 @@ func fetchFromAPI(sessionKey string) (Info, error) {
 	}
 
 	acc, err := getJSON[accountResponse](accountEndpoint, sessionKey)
-	if err == nil {
+	if errors.Is(err, ErrUnauthorized) {
+		info.Rejected = true
+	} else if err == nil {
 		info.Email = acc.Email
 	}
 
@@ -75,6 +84,9 @@ func getJSON[T any](url, sessionKey string) (T, error) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusUnauthorized {
+		return zero, ErrUnauthorized
+	}
 	if resp.StatusCode != http.StatusOK {
 		return zero, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
 	}

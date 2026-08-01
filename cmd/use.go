@@ -4,11 +4,16 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
+	"github.com/FranCalveyra/claude-desktop-swap/internal/account"
 	"github.com/FranCalveyra/claude-desktop-swap/internal/platform"
 	"github.com/FranCalveyra/claude-desktop-swap/internal/profile"
 	"github.com/spf13/cobra"
 )
+
+// liveCookiesFile is the Chromium Cookies database filename inside app-data.
+const liveCookiesFile = "Cookies"
 
 var cmdUse = &cobra.Command{
 	Use:   "use [name]",
@@ -55,7 +60,7 @@ func profileNameFromArgs(args []string, store *profile.Store) (string, error) {
 }
 
 func switchProfile(name string, store *profile.Store) error {
-	return switchProfileWith(name, store, platform.Current(), os.Stdout)
+	return switchProfileWith(name, store, platform.Current(), os.Stdout, account.Fetch)
 }
 
 type switchStore interface {
@@ -66,7 +71,10 @@ type switchStore interface {
 	Restore(string, string) error
 }
 
-func switchProfileWith(name string, store switchStore, p platform.Platform, out io.Writer) error {
+// accountVerifier checks a live Cookies database against the Claude.ai API.
+type accountVerifier func(cookiesPath string) account.Info
+
+func switchProfileWith(name string, store switchStore, p platform.Platform, out io.Writer, verify accountVerifier) error {
 	appData, err := p.AppDataPath()
 	if err != nil {
 		return err
@@ -96,6 +104,10 @@ func switchProfileWith(name string, store switchStore, p platform.Platform, out 
 	fmt.Fprintf(out, "Restoring profile %q...\n", name)
 	if err := store.Restore(name, appData); err != nil {
 		return fmt.Errorf("restore profile: %w", err)
+	}
+
+	if info := verify(filepath.Join(appData, liveCookiesFile)); info.Rejected {
+		return fmt.Errorf("profile %q was rejected by the server; sign in again in Claude Desktop and re-save it", name)
 	}
 
 	fmt.Fprintln(out, "Starting Claude Desktop...")

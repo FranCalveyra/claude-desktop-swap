@@ -7,14 +7,19 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/FranCalveyra/claude-desktop-swap/internal/account"
 	"github.com/FranCalveyra/claude-desktop-swap/internal/profile"
 )
+
+func acceptingVerifier(string) account.Info { return account.Info{} }
+
+func rejectingVerifier(string) account.Info { return account.Info{Rejected: true} }
 
 func TestSwitchProfileOrdersStopCheckpointRestoreAndLaunch(t *testing.T) {
 	events := []string{}
 	store := &fakeSwitchStore{events: &events, exists: true, current: "outgoing", health: profile.HealthUsable}
 	p := &fakePlatform{events: &events, appData: t.TempDir()}
-	if err := switchProfileWith("incoming", store, p, &bytes.Buffer{}); err != nil {
+	if err := switchProfileWith("incoming", store, p, &bytes.Buffer{}, acceptingVerifier); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"app-data", "inspect:incoming", "stop", "current", "checkpoint:outgoing", "restore:incoming", "launch"}
@@ -40,7 +45,7 @@ func TestSwitchProfileStopsAfterCheckpointOrRestoreFailure(t *testing.T) {
 			events := []string{}
 			store := &fakeSwitchStore{events: &events, exists: true, current: "outgoing", health: profile.HealthUsable, checkpointErr: tt.checkpointErr, restoreErr: tt.restoreErr}
 			p := &fakePlatform{events: &events, appData: t.TempDir()}
-			if err := switchProfileWith("incoming", store, p, &bytes.Buffer{}); err == nil {
+			if err := switchProfileWith("incoming", store, p, &bytes.Buffer{}, acceptingVerifier); err == nil {
 				t.Fatal("switch should fail")
 			}
 			if strings.Contains(strings.Join(events, ","), tt.forbidden) {
@@ -59,7 +64,7 @@ func TestSwitchProfileRefusesUnusableTargetBeforeStopping(t *testing.T) {
 			events := []string{}
 			store := &fakeSwitchStore{events: &events, exists: true, health: health}
 			p := &fakePlatform{events: &events, appData: t.TempDir()}
-			if err := switchProfileWith("incoming", store, p, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "reauthentication") {
+			if err := switchProfileWith("incoming", store, p, &bytes.Buffer{}, acceptingVerifier); err == nil || !strings.Contains(err.Error(), "reauthentication") {
 				t.Fatalf("error = %v", err)
 			}
 			if containsEvent(events, "stop") {
@@ -73,12 +78,28 @@ func TestSwitchProfileLaunchFailureKeepsCommittedIncomingState(t *testing.T) {
 	events := []string{}
 	store := &fakeSwitchStore{events: &events, exists: true, current: "outgoing", health: profile.HealthUsable}
 	p := &fakePlatform{events: &events, appData: t.TempDir(), launchErr: errors.New("launch failed")}
-	err := switchProfileWith("incoming", store, p, &bytes.Buffer{})
+	err := switchProfileWith("incoming", store, p, &bytes.Buffer{}, acceptingVerifier)
 	if err == nil || !strings.Contains(err.Error(), "launch manually") {
 		t.Fatalf("error = %v", err)
 	}
 	if store.current != "incoming" {
 		t.Fatalf("committed current = %q", store.current)
+	}
+}
+
+func TestSwitchProfileRejectedByServerStopsBeforeLaunch(t *testing.T) {
+	events := []string{}
+	store := &fakeSwitchStore{events: &events, exists: true, current: "outgoing", health: profile.HealthUsable}
+	p := &fakePlatform{events: &events, appData: t.TempDir()}
+	err := switchProfileWith("incoming", store, p, &bytes.Buffer{}, rejectingVerifier)
+	if err == nil || !strings.Contains(err.Error(), "rejected") {
+		t.Fatalf("error = %v", err)
+	}
+	if containsEvent(events, "launch") {
+		t.Fatalf("launched Claude for a rejected session: %v", events)
+	}
+	if store.current != "incoming" {
+		t.Fatalf("current = %q, want restore to have already committed tracking", store.current)
 	}
 }
 

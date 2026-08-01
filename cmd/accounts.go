@@ -7,7 +7,8 @@ import (
 
 // enrichLiveAccounts overlays live Claude.ai account info (email, plan) onto the
 // given profiles, keeping any cached values when a live lookup comes back empty
-// (offline, expired session, or unsupported platform).
+// (offline, expired session, or unsupported platform). Profiles the server
+// explicitly rejects (401) are marked expired so list/picker won't offer them.
 func enrichLiveAccounts(store *profile.Store, profiles []profile.Meta) {
 	if len(profiles) == 0 {
 		return
@@ -16,7 +17,11 @@ func enrichLiveAccounts(store *profile.Store, profiles []profile.Meta) {
 	for _, p := range profiles {
 		paths[p.Name] = store.ProfileCookiesPath(p.Name)
 	}
-	infos := account.FetchMany(paths)
+	applyLiveAccounts(profiles, account.FetchMany(paths))
+}
+
+// applyLiveAccounts merges fetched account info into profiles in place.
+func applyLiveAccounts(profiles []profile.Meta, infos map[string]account.Info) {
 	for i := range profiles {
 		info := infos[profiles[i].Name]
 		if info.Email != "" {
@@ -24,6 +29,9 @@ func enrichLiveAccounts(store *profile.Store, profiles []profile.Meta) {
 		}
 		if info.Plan != "" {
 			profiles[i].Plan = info.Plan
+		}
+		if info.Rejected {
+			profiles[i].ObservedHealth = profile.HealthExpired
 		}
 	}
 }
