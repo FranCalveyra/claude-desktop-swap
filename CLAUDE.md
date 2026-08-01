@@ -4,11 +4,25 @@ A CLI tool to switch between multiple Claude Desktop accounts without logging ou
 
 ## Project Context
 
-Claude Desktop is an Electron/Chromium app. Sessions live in:
-- **Cookies** (`~/Library/Application Support/Claude/Cookies`) — SQLite DB, Chromium-encrypted via OS keychain
-- **Local Storage** (`~/Library/Application Support/Claude/Local Storage/leveldb/`) — LevelDB
+Claude Desktop is an Electron/Chromium app. Its app-data directory holds the
+full signed-in state, not just cookies: **Cookies** (SQLite, Chromium-encrypted
+via OS keychain), **Local Storage**/**IndexedDB**/**Session Storage** (LevelDB),
+and `config.json` (OAuth token cache, `lastKnownAccountUuid`, and other
+account-scoped keys mixed with device/UI preferences).
 
-Switching accounts = swapping the `sessionKey`, `sessionKeyLC`, `routingHint`, `lastActiveOrg`, and related claude.ai cookies in that SQLite DB.
+A profile is a **denylist-filtered mirror of the whole app-data tree**, not an
+allowlist of known account files. Two small denylists exclude cache/runtime
+junk (`Cache`, `Crashpad`, ...) and machine/work state that must never travel
+between accounts (`ant-did`, MCP config, worktree state, ...); everything else
+is captured by default, so state Anthropic adds later is captured too instead
+of silently leaking across accounts (the recurring "sign in again" bug this
+replaced). See `cacheDenylist`/`workDenylist` in `internal/profile/store.go`.
+
+Account identity for `status`/`list`/picker highlighting is
+`config.json`'s `lastKnownAccountUuid`, not the Cookies digest — the
+`sessionKey` cookie is a sliding ~28-day token the app rotates on its own, so
+a live digest routinely diverges from what was last saved even for the
+correct account.
 
 ## Language & Stack
 
@@ -19,7 +33,7 @@ Switching accounts = swapping the `sessionKey`, `sessionKeyLC`, `routingHint`, `
 ## Architecture
 
 - CLI-first, single binary
-- Profiles stored in `~/.claude-swap/profiles/<name>/` as sqlite snapshots (cookies only)
+- Profiles stored in `~/.claude-swap/profiles/<name>/` as a denylist-filtered mirror of the app-data tree
 - No daemon, no background process — swap is a one-shot operation
 - Cross-platform paths resolved at runtime (macOS / Windows)
 
@@ -54,16 +68,16 @@ claude-desktop-swap status             # show which profile is active (if tracka
 
 ## Cookie Encryption
 
-Chromium encrypts cookie values using the OS keychain. On the **same machine**, all profiles share the same encryption key — so encrypted blobs can be copied verbatim between profile snapshots without decryption. The **swap path never decrypts cookie values; always work with raw encrypted blobs.**
+Chromium encrypts cookie values using the OS keychain. On the **same machine**, all profiles share the same encryption key — so encrypted blobs can be copied verbatim between profile snapshots without decryption. Capture and restore work at the level of whole files/directories (denylist-filtered copy in, mirror copy out) — nothing in that path parses or decrypts `Cookies`, `config.json`, or any other captured file. The **swap path never decrypts anything; always work with raw encrypted blobs and opaque files.**
 
-**Exception — account info (`internal/account`):** the `list`/picker account-info feature decrypts the `sessionKey` in memory to call the claude.ai API for the account's email and plan. This is the only place decryption is allowed. It is transient (never written to disk), only the resulting email/plan are persisted, and the raw session is never stored.
+**Exception — account info (`internal/account`):** the `list`/picker account-info feature and the post-restore verification in `use` decrypt the `sessionKey` in memory to call the claude.ai API (for email/plan, and to detect a server-rejected session). This is the only place decryption is allowed. It is transient (never written to disk), only the resulting email/plan/rejection status are persisted, and the raw session is never stored.
 
 ## Security Notes
 
 - Never log or print cookie values.
 - Profile directories should be created with `0700` permissions.
 - Never store decrypted session data anywhere (email/plan derived from the account API is not session data and may be cached in `meta.json`).
-- The account-info feature is the only component that decrypts a cookie value and the only one that makes a network call; the swap itself stays fully local and offline.
+- The account-info feature is the only component that decrypts a cookie value and the only one that makes network calls. `save`, `list`'s own file operations, and the restore/mirror mechanics in `use` stay fully local — but `use` is **not** 100% offline end-to-end: after restoring, it calls the claude.ai API (macOS only) to confirm the server accepts the restored session, and fails clearly instead of launching a session the server will reject. This call is best-effort and silently skipped off macOS or when offline; only an explicit 401 blocks the switch.
 
 ## Testing
 
