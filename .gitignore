@@ -4,3 +4,4 @@ dist/
 *.test
 coverage.out
 .atl/
+.DS_Store

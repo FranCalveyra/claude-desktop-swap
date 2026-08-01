@@ -18,6 +18,18 @@ is captured by default, so state Anthropic adds later is captured too instead
 of silently leaking across accounts (the recurring "sign in again" bug this
 replaced). See `cacheDenylist`/`workDenylist` in `internal/profile/store.go`.
 
+Session expiry is a **separate axis from `Health`**, deliberately. `Health`
+answers "does this profile work at all?"; `Inspection.ExpiresAt` answers "until
+when?". A session expiring in two days is fully usable, so `Renewal`
+(`ok`/`soon`/`expired`/`unknown`, 7-day window) is never folded into the
+`Health` enum — several `if Health != HealthUsable { abort }` guards in
+`save`/`use` would start refusing valid profiles. Two expiry signals exist and
+`renewalFor` reconciles them: the local `expires_utc`, and the server's 401
+that `enrichLiveAccounts` folds into `HealthExpired`. The server verdict wins.
+`Meta.SessionExpiresAt` is never persisted (`json:"-"`) because the sliding
+token would make a saved value stale, and the active profile's expiry is read
+from live app-data rather than its frozen snapshot.
+
 Account identity for `status`/`list`/picker highlighting is
 `config.json`'s `lastKnownAccountUuid`, not the Cookies digest — the
 `sessionKey` cookie is a sliding ~28-day token the app rotates on its own, so

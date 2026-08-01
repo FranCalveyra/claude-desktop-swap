@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/FranCalveyra/claude-desktop-swap/internal/account"
 	"github.com/FranCalveyra/claude-desktop-swap/internal/platform"
@@ -116,5 +117,15 @@ func switchProfileWith(name string, store switchStore, p platform.Platform, out 
 	}
 
 	fmt.Fprintf(out, "Switched to %q.\n", name)
+	warnRenewal(out, name, inspection.ExpiresAt, time.Now())
 	return nil
+}
+
+func warnRenewal(out io.Writer, name string, expiresAt, now time.Time) {
+	switch profile.ClassifyRenewal(expiresAt, now) {
+	case profile.RenewalSoon:
+		fmt.Fprintf(out, "⚠ Session for %q expires in %s — use it in Claude Desktop to renew it before it lapses.\n", name, until(expiresAt, now))
+	case profile.RenewalExpired:
+		fmt.Fprintf(out, "⚠ Session for %q has expired — sign in again in Claude Desktop and re-save it.\n", name)
+	}
 }

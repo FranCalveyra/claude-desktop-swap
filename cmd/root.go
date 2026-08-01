@@ -1,10 +1,18 @@
 package cmd
 
 import (
+	"errors"
+	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
 )
+
+// exitCodeError lets a command pick the process exit status without printing
+// an extra error line — `status --check` reports through the exit code.
+type exitCodeError int
+
+func (e exitCodeError) Error() string { return fmt.Sprintf("exit status %d", int(e)) }
 
 // Version is set at build time via -ldflags.
 var Version = "dev"
@@ -16,9 +24,17 @@ var root = &cobra.Command{
 }
 
 func Execute() {
-	if err := root.Execute(); err != nil {
-		os.Exit(1)
+	root.SilenceErrors = true
+	err := root.Execute()
+	if err == nil {
+		return
 	}
+	var code exitCodeError
+	if errors.As(err, &code) {
+		os.Exit(int(code))
+	}
+	fmt.Fprintln(os.Stderr, "Error:", err)
+	os.Exit(1)
 }
 
 func init() {

@@ -28,6 +28,40 @@ const (
 type Inspection struct {
 	Health Health
 	Reason string
+	// ExpiresAt is the sessionKey cookie's expiry. Zero means "no deadline
+	// known" — a non-persistent cookie or an unreadable database — never
+	// "expires now". It is deliberately not a Health value: a session
+	// expiring in two days is still fully usable, and the Health guards in
+	// save/use would refuse it.
+	ExpiresAt time.Time
+}
+
+// RenewalWindow is how close to expiry a session starts being reported as
+// needing a re-login. The sessionKey is a sliding ~28-day token the app
+// renews whenever that account is used, so reaching this window means the
+// profile has gone roughly three weeks untouched.
+const RenewalWindow = 7 * 24 * time.Hour
+
+type Renewal string
+
+const (
+	RenewalOK      Renewal = "ok"
+	RenewalSoon    Renewal = "soon"
+	RenewalExpired Renewal = "expired"
+	RenewalUnknown Renewal = "unknown"
+)
+
+func ClassifyRenewal(expiresAt, now time.Time) Renewal {
+	if expiresAt.IsZero() {
+		return RenewalUnknown
+	}
+	if !expiresAt.After(now) {
+		return RenewalExpired
+	}
+	if expiresAt.Sub(now) <= RenewalWindow {
+		return RenewalSoon
+	}
+	return RenewalOK
 }
 
 const chromiumEpochOffsetMicros int64 = 11644473600000000
@@ -83,10 +117,14 @@ func inspectCookiesWithTimeout(path string, now time.Time, timeout time.Duration
 	if err != nil {
 		return Inspection{Health: HealthUnknown, Reason: "Cookies schema is unsupported"}
 	}
-	if expires > 0 && expires-chromiumEpochOffsetMicros <= now.UnixMicro() {
-		return Inspection{Health: HealthExpired, Reason: "Claude session has expired; reauthentication is required"}
+	var expiresAt time.Time
+	if expires > 0 {
+		expiresAt = time.UnixMicro(expires - chromiumEpochOffsetMicros).UTC()
 	}
-	return Inspection{Health: HealthUsable, Reason: "Claude session evidence is locally usable"}
+	if expires > 0 && expires-chromiumEpochOffsetMicros <= now.UnixMicro() {
+		return Inspection{Health: HealthExpired, Reason: "Claude session has expired; reauthentication is required", ExpiresAt: expiresAt}
+	}
+	return Inspection{Health: HealthUsable, Reason: "Claude session evidence is locally usable", ExpiresAt: expiresAt}
 }
 
 // volatileCookieNames are device/IP-bound Cloudflare cookies that hard-fail

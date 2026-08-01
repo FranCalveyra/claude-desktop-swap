@@ -87,6 +87,10 @@ type Meta struct {
 	// the sessionKey cookie is a sliding 28-day token the app rotates on its
 	// own, so a live digest routinely diverges from what was last saved.
 	AccountUUID string `json:"account_uuid,omitempty"`
+	// SessionExpiresAt is observed on every List, never persisted: the
+	// sessionKey slides, so a value written at save time would be stale
+	// and would under-report how long the profile actually has.
+	SessionExpiresAt time.Time `json:"-"`
 }
 
 type Store struct {
@@ -433,7 +437,9 @@ func (s *Store) List() ([]Meta, error) {
 		if err != nil {
 			meta = Meta{Name: entry.Name()}
 		}
-		meta.ObservedHealth = s.Inspect(entry.Name()).Health
+		inspection := s.Inspect(entry.Name())
+		meta.ObservedHealth = inspection.Health
+		meta.SessionExpiresAt = inspection.ExpiresAt
 		profiles = append(profiles, meta)
 	}
 	sort.Slice(profiles, func(i, j int) bool { return profiles[i].Name < profiles[j].Name })
