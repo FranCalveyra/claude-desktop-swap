@@ -25,6 +25,27 @@ archives:
 checksum:
   name_template: "checksums.txt"
 
+homebrew_casks:
+  - name: claude-desktop-swap
+    binary: claude-desktop-swap
+    homepage: "https://github.com/FranCalveyra/claude-desktop-swap"
+    description: "Switch between Claude Desktop accounts without logging out"
+    license: "MIT"
+    repository:
+      owner: FranCalveyra
+      name: homebrew-tap
+      # GITHUB_TOKEN is scoped to this repo and cannot push to the tap.
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    # Casks quarantine downloaded binaries, and an unsigned one then fails to
+    # open at all. Delete this hook once releases are signed and notarized —
+    # it trades Gatekeeper verification for the install working.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/claude-desktop-swap"]
+          end
+
 changelog:
   sort: asc
   use: github

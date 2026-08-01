@@ -19,7 +19,12 @@ Before restoring the incoming profile, a switch checkpoints the currently tracke
 
 ## Installation
 
-Download the latest binary for your platform from the [releases page](../../releases/latest).
+**Homebrew (recommended)**
+```sh
+brew install FranCalveyra/tap/claude-desktop-swap
+```
+
+Or download the latest binary for your platform from the [releases page](../../releases/latest).
 
 **macOS (Apple Silicon)**
 ```sh
