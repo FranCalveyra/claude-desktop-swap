@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/FranCalveyra/claude-desktop-swap/internal/platform"
 	"github.com/FranCalveyra/claude-desktop-swap/internal/profile"
@@ -25,6 +26,7 @@ var cmdSave = &cobra.Command{
 
 type saveStore interface {
 	Checkpoint(string, string) error
+	Inspect(string) profile.Inspection
 }
 
 func saveProfileWith(name string, store saveStore, p platform.Platform, out io.Writer) error {
@@ -47,6 +49,7 @@ func saveProfileWith(name string, store saveStore, p platform.Platform, out io.W
 		return err
 	}
 	fmt.Fprintf(out, "Profile %q saved.\n", name)
+	warnRenewal(out, name, store.Inspect(name).ExpiresAt, time.Now())
 
 	if running {
 		fmt.Fprintln(out, "Starting Claude Desktop...")

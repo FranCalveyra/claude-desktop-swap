@@ -54,8 +54,11 @@ claude-desktop-swap use work
 # List all saved profiles (* = active)
 claude-desktop-swap list
 
-# Show the currently active profile
+# Show the currently active profile and how long its session has left
 claude-desktop-swap status
+
+# Same, but report through the exit code: 0 healthy, 1 expiring soon, 2 expired
+claude-desktop-swap status --check
 
 # Delete a profile
 claude-desktop-swap delete old-account
@@ -100,6 +103,14 @@ Version 1 profiles remain readable without eager migration. A locally usable v1 
 Health is based on non-secret local SQLite evidence and is reported as `usable`, `expired`, `missing`, or `unknown`. Expired, missing, unknown, unsafe, or integrity-mismatched profiles are never restored. Server-side expiry cannot be extended by this tool.
 
 The active profile is tracked at `~/.claude-swap/current`, but `status` reports a profile name only when live Cookies actually match a usable saved profile.
+
+## Session expiry
+
+`list`, `status`, and the `use` picker show an `EXPIRES` column derived from the `sessionKey` cookie's own expiry, and `save`/`use` print a warning when a session has 7 days or less left. The `sessionKey` is a sliding ~28-day token that Claude renews whenever you use that account, so reaching the 7-day window means the profile has gone roughly three weeks untouched.
+
+Expiry is advisory, never a block: a session expiring tomorrow is still perfectly usable and still switches. A profile shows `-` when no deadline is known — a non-persistent cookie or an unreadable database — and no warning is invented from missing data. When the server has already rejected a session, that verdict wins over whatever the local cookie claims.
+
+`status --check` exits `0` when healthy, `1` when the session expires within 7 days, and `2` when it has expired, so it can drive a shell prompt or a cron job.
 
 ## Switch safety and preserved data
 

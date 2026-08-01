@@ -25,6 +25,7 @@ type pickerModel struct {
 	chosen    string
 	cancelled bool
 	typed     string
+	now       time.Time
 }
 
 func runPicker(profiles []profile.Meta, current string) (string, error) {
@@ -45,7 +46,7 @@ func runPicker(profiles []profile.Meta, current string) (string, error) {
 }
 
 func newPickerModel(profiles []profile.Meta, current string) pickerModel {
-	m := pickerModel{profiles: profiles, current: current}
+	m := pickerModel{profiles: profiles, current: current, now: time.Now()}
 	for i, p := range profiles {
 		if p.Name == current {
 			m.cursor = i
@@ -124,16 +125,17 @@ func (m *pickerModel) jumpToTypedRow() {
 
 func (m pickerModel) View() string {
 	var b strings.Builder
-	accountWidth, planWidth, healthWidth, lastWidth := m.columnWidths()
+	accountWidth, planWidth, healthWidth, expiresWidth, lastWidth := m.columnWidths()
 
 	b.WriteString("\n  ")
 	b.WriteString(pickerTitleStyle.Render("Select account to activate:"))
 	b.WriteString("\n\n")
 	b.WriteString(pickerHeaderStyle.Render(fmt.Sprintf(
-		"       %s  %s  %s  %s",
+		"       %s  %s  %s  %s  %s",
 		padRight("ACCOUNT", accountWidth),
 		padRight("PLAN", planWidth),
 		padRight("HEALTH", healthWidth),
+		padRight("EXPIRES", expiresWidth),
 		padRight("LAST", lastWidth),
 	)))
 	b.WriteString("\n")
@@ -150,12 +152,13 @@ func (m pickerModel) View() string {
 		}
 
 		fmt.Fprintf(&b,
-			"  %s %02d %s  %s  %s  %s%s\n",
+			"  %s %02d %s  %s  %s  %s  %s%s\n",
 			cursor,
 			i+1,
 			padRight(accountLabel(p), accountWidth),
 			padRight(planLabel(p), planWidth),
 			padRight(healthLabel(p.ObservedHealth), healthWidth),
+			padRight(metaExpiryLabel(p, m.now), expiresWidth),
 			padRight(relativeLastUsed(p.LastUsed), lastWidth),
 			badge,
 		)
@@ -167,22 +170,24 @@ func (m pickerModel) View() string {
 	return b.String()
 }
 
-func (m pickerModel) columnWidths() (accountWidth, planWidth, healthWidth, lastWidth int) {
+func (m pickerModel) columnWidths() (accountWidth, planWidth, healthWidth, expiresWidth, lastWidth int) {
 	accountWidth = lipgloss.Width("ACCOUNT")
 	planWidth = lipgloss.Width("PLAN")
 	healthWidth = lipgloss.Width("HEALTH")
+	expiresWidth = lipgloss.Width("EXPIRES")
 	lastWidth = lipgloss.Width("LAST")
 
 	for _, p := range m.profiles {
 		accountWidth = max(accountWidth, lipgloss.Width(accountLabel(p)))
 		planWidth = max(planWidth, lipgloss.Width(planLabel(p)))
 		healthWidth = max(healthWidth, lipgloss.Width(healthLabel(p.ObservedHealth)))
+		expiresWidth = max(expiresWidth, lipgloss.Width(metaExpiryLabel(p, m.now)))
 		lastWidth = max(lastWidth, lipgloss.Width(relativeLastUsed(p.LastUsed)))
 	}
 
 	planWidth = max(planWidth, 8)
 	lastWidth = max(lastWidth, 6)
-	return accountWidth, planWidth, healthWidth, lastWidth
+	return accountWidth, planWidth, healthWidth, expiresWidth, lastWidth
 }
 
 func accountLabel(p profile.Meta) string {

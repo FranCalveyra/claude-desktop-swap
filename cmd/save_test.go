@@ -13,7 +13,7 @@ func TestSaveProfileStopsCheckpointsAndRelaunchesWhenRunning(t *testing.T) {
 	if err := saveProfileWith("work", store, p, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"app-data", "stop", "checkpoint:work", "launch"}
+	want := []string{"app-data", "stop", "checkpoint:work", "inspect:work", "launch"}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("events = %v, want %v", events, want)
 	}
@@ -26,7 +26,7 @@ func TestSaveProfileCheckpointsWithoutTouchingAppWhenStopped(t *testing.T) {
 	if err := saveProfileWith("work", store, p, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"app-data", "checkpoint:work"}
+	want := []string{"app-data", "checkpoint:work", "inspect:work"}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("events = %v, want %v", events, want)
 	}

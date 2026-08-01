@@ -169,3 +169,56 @@ func mustExec(t *testing.T, db *sql.DB, query string, args ...any) {
 func chromiumTime(t time.Time) int64 {
 	return t.UnixMicro() + 11644473600000000
 }
+
+func TestClassifyRenewal(t *testing.T) {
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name      string
+		expiresAt time.Time
+		want      Renewal
+	}{
+		{"no evidence", time.Time{}, RenewalUnknown},
+		{"already lapsed", now.Add(-time.Hour), RenewalExpired},
+		{"exactly now", now, RenewalExpired},
+		{"edge of window", now.Add(RenewalWindow), RenewalSoon},
+		{"inside window", now.Add(3 * 24 * time.Hour), RenewalSoon},
+		{"just outside window", now.Add(RenewalWindow + time.Minute), RenewalOK},
+		{"fresh sliding token", now.Add(28 * 24 * time.Hour), RenewalOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClassifyRenewal(tc.expiresAt, now); got != tc.want {
+				t.Fatalf("ClassifyRenewal = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestInspectCookiesCarriesExpiry(t *testing.T) {
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	expiry := now.Add(21 * 24 * time.Hour)
+	path := filepath.Join(t.TempDir(), "Cookies")
+	createCookiesDB(t, path, ".claude.ai", "sessionKey", chromiumTime(expiry))
+
+	got := InspectCookies(path, now)
+	if got.Health != HealthUsable {
+		t.Fatalf("health = %s, want usable", got.Health)
+	}
+	if !got.ExpiresAt.Equal(expiry) {
+		t.Fatalf("ExpiresAt = %s, want %s", got.ExpiresAt, expiry)
+	}
+}
+
+// A non-persistent session cookie carries no deadline; reporting one would
+// invent a warning out of missing data.
+func TestInspectCookiesLeavesExpiryZeroForSessionCookie(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Cookies")
+	createCookiesDB(t, path, ".claude.ai", "sessionKey", 0)
+
+	got := InspectCookies(path, time.Now())
+	if !got.ExpiresAt.IsZero() {
+		t.Fatalf("ExpiresAt = %s, want zero", got.ExpiresAt)
+	}
+	if ClassifyRenewal(got.ExpiresAt, time.Now()) != RenewalUnknown {
+		t.Fatal("session cookie must classify as unknown, not expiring")
+	}
+}
