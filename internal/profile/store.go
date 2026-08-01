@@ -21,17 +21,55 @@ const (
 	cookiesJournalFile = "Cookies-journal"
 	cookiesWALFile     = "Cookies-wal"
 	cookiesSHMFile     = "Cookies-shm"
-	localStorageDir    = "Local Storage"
-	leveldbDir         = "leveldb"
-	indexedDBDir       = "IndexedDB"
-	sessionStorageDir  = "Session Storage"
-	deviceIDFile       = "ant-did"
+	rollbackDirName    = ".rollback"
 	metaFile           = "meta.json"
-	formatVersion      = 2
+	formatVersion      = 3
 
 	dirPerm  os.FileMode = 0700
 	filePerm os.FileMode = 0600
 )
+
+// cacheDenylist covers app-data entries that are pure cache/runtime state:
+// large, regenerable by Chromium/Electron on next launch, and never worth
+// carrying between accounts.
+var cacheDenylist = map[string]bool{
+	"Cache":                     true,
+	"Code Cache":                true,
+	"GPUCache":                  true,
+	"DawnGraphiteCache":         true,
+	"DawnWebGPUCache":           true,
+	"blob_storage":              true,
+	"Crashpad":                  true,
+	"sentry":                    true,
+	"claude-code":               true,
+	"claude-code-vm":            true,
+	"ca-bundle.pem":             true,
+	"extensions-blocklist.json": true,
+}
+
+// workDenylist covers entries that describe the machine or in-flight work
+// rather than the signed-in account: they must survive an account switch
+// untouched and never get captured into a profile.
+var workDenylist = map[string]bool{
+	"ant-did":                     true,
+	"claude_desktop_config.json":  true,
+	"claude-code-sessions":        true,
+	"local-agent-mode-sessions":   true,
+	"vm_bundles":                  true,
+	"git-worktrees.json":          true,
+	"window-state.json":           true,
+	"plan-usage-history.json":     true,
+	"buddy-tokens.json":           true,
+	"cowork-enabled-cli-ops.json": true,
+}
+
+// skip reports whether a top-level app-data entry is cache/runtime state or
+// machine/work state, and therefore must never be captured into or mirrored
+// out of a profile. Everything else belongs to the account by default, so
+// new state Anthropic adds later is captured automatically.
+func skip(name string) bool {
+	return cacheDenylist[name] || workDenylist[name]
+}
 
 type Meta struct {
 	Name           string    `json:"name"`
@@ -105,18 +143,11 @@ func (s *Store) Checkpoint(name, appDataPath string) error {
 	if err := os.Chmod(stage, dirPerm); err != nil {
 		return err
 	}
-	stagedCookies := filepath.Join(stage, cookiesFile)
-	if err := copyFile(live, stagedCookies); err != nil {
-		return fmt.Errorf("stage cookies: %w", err)
-	}
-	liveLevelDB := filepath.Join(appDataPath, localStorageDir, leveldbDir)
-	if info, err := os.Stat(liveLevelDB); err == nil && info.IsDir() {
-		if err := copyDir(liveLevelDB, filepath.Join(stage, localStorageDir, leveldbDir)); err != nil {
-			return fmt.Errorf("stage Local Storage: %w", err)
-		}
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := captureAppData(appDataPath, stage); err != nil {
 		return err
 	}
+
+	stagedCookies := filepath.Join(stage, cookiesFile)
 	digest, err := cookieDigest(stagedCookies)
 	if err != nil {
 		return err
@@ -140,6 +171,33 @@ func (s *Store) Checkpoint(name, appDataPath string) error {
 	return s.commitProfile(name, stage)
 }
 
+// captureAppData copies every top-level app-data entry that isn't
+// denylisted into stage, recursively preserving the tree underneath.
+func captureAppData(appDataPath, stage string) error {
+	entries, err := os.ReadDir(appDataPath)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == rollbackDirName || skip(name) {
+			continue
+		}
+		src := filepath.Join(appDataPath, name)
+		dst := filepath.Join(stage, name)
+		if entry.IsDir() {
+			if err := copyDir(src, dst); err != nil {
+				return fmt.Errorf("capture %s: %w", name, err)
+			}
+		} else if entry.Type().IsRegular() {
+			if err := copyFile(src, dst); err != nil {
+				return fmt.Errorf("capture %s: %w", name, err)
+			}
+		}
+	}
+	return nil
+}
+
 func (s *Store) Inspect(name string) Inspection {
 	if !s.Exists(name) {
 		return Inspection{Health: HealthMissing, Reason: "profile is missing"}
@@ -153,15 +211,25 @@ func (s *Store) Inspect(name string) Inspection {
 		return inspection
 	}
 	meta, err := s.loadMeta(name)
-	if err == nil && meta.FormatVersion >= formatVersion && meta.CookieDigest != "" {
-		digest, err := cookieDigest(cookies)
-		if err != nil || digest != meta.CookieDigest {
-			return Inspection{Health: HealthUnknown, Reason: "profile integrity digest does not match"}
+	if err == nil {
+		if meta.FormatVersion < formatVersion {
+			return Inspection{Health: HealthUnknown, Reason: "profile is in an outdated format — run `save <name>` while signed into that account to re-save it"}
+		}
+		if meta.CookieDigest != "" {
+			digest, err := cookieDigest(cookies)
+			if err != nil || digest != meta.CookieDigest {
+				return Inspection{Health: HealthUnknown, Reason: "profile integrity digest does not match"}
+			}
 		}
 	}
 	return inspection
 }
 
+// Restore mirrors the profile onto live app-data: every live top-level entry
+// that isn't denylisted is moved into a same-directory rollback backup, the
+// profile is copied in its place, and the backup is discarded only once the
+// whole copy has committed without error. Any failure along the way restores
+// the exact pre-Restore tree from the backup.
 func (s *Store) Restore(name, appDataPath string) error {
 	inspection := s.Inspect(name)
 	if inspection.Health != HealthUsable {
@@ -170,42 +238,65 @@ func (s *Store) Restore(name, appDataPath string) error {
 	if err := os.MkdirAll(appDataPath, dirPerm); err != nil {
 		return err
 	}
+	if err := recoverRollback(appDataPath); err != nil {
+		return fmt.Errorf("recover interrupted restore: %w", err)
+	}
 
-	stage, err := os.CreateTemp(appDataPath, ".Cookies.stage-")
+	rollbackDir := filepath.Join(appDataPath, rollbackDirName)
+	if err := os.MkdirAll(rollbackDir, dirPerm); err != nil {
+		return err
+	}
+
+	liveEntries, err := os.ReadDir(appDataPath)
 	if err != nil {
 		return err
 	}
-	stagePath := stage.Name()
-	stage.Close()
-	defer os.Remove(stagePath)
-	if err := copyFile(filepath.Join(s.profileDir(name), cookiesFile), stagePath); err != nil {
-		return fmt.Errorf("stage live cookies: %w", err)
+	var moved []string
+	var copied []string
+	rollback := func() { rollbackRestore(appDataPath, rollbackDir, copied, moved) }
+
+	for _, entry := range liveEntries {
+		name := entry.Name()
+		if name == rollbackDirName || skip(name) {
+			continue
+		}
+		if err := os.Rename(filepath.Join(appDataPath, name), filepath.Join(rollbackDir, name)); err != nil {
+			rollback()
+			return fmt.Errorf("retain live %s: %w", name, err)
+		}
+		moved = append(moved, name)
 	}
-	if got := InspectCookies(stagePath, s.now()); got.Health != HealthUsable {
-		return fmt.Errorf("staged live cookies are %s: %s", got.Health, got.Reason)
+
+	profileDir := s.profileDir(name)
+	profileEntries, err := os.ReadDir(profileDir)
+	if err != nil {
+		rollback()
+		return err
+	}
+	for _, entry := range profileEntries {
+		entryName := entry.Name()
+		if entryName == metaFile {
+			continue
+		}
+		src := filepath.Join(profileDir, entryName)
+		dst := filepath.Join(appDataPath, entryName)
+		var copyErr error
+		if entry.IsDir() {
+			copyErr = copyDir(src, dst)
+		} else if entry.Type().IsRegular() {
+			copyErr = copyFile(src, dst)
+		}
+		if copyErr != nil {
+			rollback()
+			return fmt.Errorf("restore %s: %w", entryName, copyErr)
+		}
+		copied = append(copied, entryName)
 	}
 
 	live := filepath.Join(appDataPath, cookiesFile)
-	backup := filepath.Join(appDataPath, ".Cookies.rollback")
-	_ = os.Remove(backup)
-	hadLive := false
-	if _, err := os.Stat(live); err == nil {
-		hadLive = true
-		if err := os.Rename(live, backup); err != nil {
-			return fmt.Errorf("retain live cookies: %w", err)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	rollback := func() {
-		_ = os.Remove(live)
-		if hadLive {
-			_ = os.Rename(backup, live)
-		}
-	}
-	if err := os.Rename(stagePath, live); err != nil {
+	if got := InspectCookies(live, s.now()); got.Health != HealthUsable {
 		rollback()
-		return fmt.Errorf("commit live cookies: %w", err)
+		return fmt.Errorf("restored live cookies are %s: %s", got.Health, got.Reason)
 	}
 	if err := os.Chmod(live, filePerm); err != nil {
 		rollback()
@@ -215,10 +306,7 @@ func (s *Store) Restore(name, appDataPath string) error {
 		rollback()
 		return fmt.Errorf("strip volatile cookies: %w", err)
 	}
-	if err := s.restoreVolatile(name, appDataPath); err != nil {
-		rollback()
-		return err
-	}
+
 	previousMeta, metaErr := s.loadMeta(name)
 	if err := s.setLastUsed(name); err != nil {
 		rollback()
@@ -231,17 +319,88 @@ func (s *Store) Restore(name, appDataPath string) error {
 		rollback()
 		return err
 	}
-	_ = os.Remove(backup)
-	return nil
+
+	return os.RemoveAll(rollbackDir)
 }
 
+// recoverRollback finishes an interrupted Restore found on the next run: for
+// each entry still sitting in a leftover rollback backup, the live slot is
+// either empty (the interrupted copy never reached it — rename the backup
+// back) or already holds the entry the interrupted copy placed there (which
+// is what the very next Restore attempt will overwrite anyway — discard the
+// now-redundant backup copy). It never removes anything actually live.
+func recoverRollback(appDataPath string) error {
+	rollbackDir := filepath.Join(appDataPath, rollbackDirName)
+	info, err := os.Stat(rollbackDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return nil
+	}
+	entries, err := os.ReadDir(rollbackDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		dst := filepath.Join(appDataPath, name)
+		src := filepath.Join(rollbackDir, name)
+		if _, err := os.Stat(dst); errors.Is(err, os.ErrNotExist) {
+			if err := os.Rename(src, dst); err != nil {
+				return fmt.Errorf("recover %s: %w", name, err)
+			}
+		} else if err != nil {
+			return err
+		} else {
+			if err := os.RemoveAll(src); err != nil {
+				return fmt.Errorf("discard recovered %s: %w", name, err)
+			}
+		}
+	}
+	return os.Remove(rollbackDir)
+}
+
+// rollbackRestore undoes a partial Restore: entries already copied from the
+// profile are discarded (they were never live — the genuine pre-Restore
+// state is what's sitting in rollbackDir), then every moved entry is renamed
+// back from rollbackDir onto appDataPath.
+func rollbackRestore(appDataPath, rollbackDir string, copied, moved []string) {
+	for _, name := range copied {
+		_ = os.RemoveAll(filepath.Join(appDataPath, name))
+	}
+	for _, name := range moved {
+		dst := filepath.Join(appDataPath, name)
+		_ = os.RemoveAll(dst)
+		_ = os.Rename(filepath.Join(rollbackDir, name), dst)
+	}
+	_ = os.RemoveAll(rollbackDir)
+}
+
+// Wipe clears every non-denylisted app-data entry so the next launch starts
+// a fresh, signed-out session. Denylisted entries (cache, machine/work
+// state) are left untouched.
 func (s *Store) Wipe(appDataPath string) error {
-	for _, name := range []string{cookiesFile, cookiesJournalFile, cookiesWALFile, cookiesSHMFile} {
-		if err := os.Remove(filepath.Join(appDataPath, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	entries, err := os.ReadDir(appDataPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == rollbackDirName || skip(name) {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(appDataPath, name)); err != nil {
 			return fmt.Errorf("wipe %s: %w", name, err)
 		}
 	}
-	return clearVolatile(appDataPath)
+	return nil
 }
 
 func HasActiveSession(appDataPath string) bool {
@@ -475,36 +634,6 @@ func copyFile(src, dst string) error {
 	return out.Close()
 }
 
-// restoreVolatile clears the Cookies sidecars, restores the profile's Local
-// Storage snapshot (which holds device-trust / elevated-auth state), and wipes
-// the truly ephemeral stores. Profiles saved before snapshots existed have no
-// Local Storage payload, so live Local Storage is left cleared for them.
-func (s *Store) restoreVolatile(name, appDataPath string) error {
-	for _, sidecar := range []string{cookiesJournalFile, cookiesWALFile, cookiesSHMFile} {
-		if err := os.Remove(filepath.Join(appDataPath, sidecar)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("clear %s: %w", sidecar, err)
-		}
-	}
-	liveLevelDB := filepath.Join(appDataPath, localStorageDir, leveldbDir)
-	if err := os.RemoveAll(liveLevelDB); err != nil {
-		return fmt.Errorf("clear %s: %w", leveldbDir, err)
-	}
-	snapshot := filepath.Join(s.profileDir(name), localStorageDir, leveldbDir)
-	if info, err := os.Stat(snapshot); err == nil && info.IsDir() {
-		if err := copyDir(snapshot, liveLevelDB); err != nil {
-			return fmt.Errorf("restore Local Storage: %w", err)
-		}
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	for _, dir := range []string{indexedDBDir, sessionStorageDir} {
-		if err := os.RemoveAll(filepath.Join(appDataPath, dir)); err != nil {
-			return fmt.Errorf("clear %s: %w", filepath.Base(dir), err)
-		}
-	}
-	return nil
-}
-
 func copyDir(src, dst string) error {
 	if err := os.MkdirAll(dst, dirPerm); err != nil {
 		return err
@@ -527,19 +656,6 @@ func copyDir(src, dst string) error {
 		}
 		if err := copyFile(from, to); err != nil {
 			return err
-		}
-	}
-	return nil
-}
-
-func clearVolatile(appDataPath string) error {
-	for _, path := range []string{
-		filepath.Join(appDataPath, localStorageDir, leveldbDir),
-		filepath.Join(appDataPath, indexedDBDir),
-		filepath.Join(appDataPath, sessionStorageDir),
-	} {
-		if err := os.RemoveAll(path); err != nil {
-			return fmt.Errorf("clear %s: %w", filepath.Base(path), err)
 		}
 	}
 	return nil
