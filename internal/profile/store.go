@@ -21,6 +21,7 @@ const (
 	cookiesJournalFile = "Cookies-journal"
 	cookiesWALFile     = "Cookies-wal"
 	cookiesSHMFile     = "Cookies-shm"
+	configFile         = "config.json"
 	rollbackDirName    = ".rollback"
 	metaFile           = "meta.json"
 	formatVersion      = 3
@@ -81,6 +82,11 @@ type Meta struct {
 	SavedAt        time.Time `json:"saved_at,omitempty"`
 	ObservedHealth Health    `json:"observed_health,omitempty"`
 	CookieDigest   string    `json:"cookie_digest,omitempty"`
+	// AccountUUID is config.json's lastKnownAccountUuid at checkpoint time —
+	// the account identity used by MatchLive. CookieDigest is not identity:
+	// the sessionKey cookie is a sliding 28-day token the app rotates on its
+	// own, so a live digest routinely diverges from what was last saved.
+	AccountUUID string `json:"account_uuid,omitempty"`
 }
 
 type Store struct {
@@ -152,7 +158,10 @@ func (s *Store) Checkpoint(name, appDataPath string) error {
 	if err != nil {
 		return err
 	}
-	meta := Meta{Name: name, CreatedAt: s.now(), FormatVersion: formatVersion, SavedAt: s.now(), ObservedHealth: HealthUsable, CookieDigest: digest}
+	// Best-effort: an unreadable or missing config.json degrades identity
+	// tracking (MatchLive) but must not block saving the profile itself.
+	accountUUID, _ := readAccountUUID(stage)
+	meta := Meta{Name: name, CreatedAt: s.now(), FormatVersion: formatVersion, SavedAt: s.now(), ObservedHealth: HealthUsable, CookieDigest: digest, AccountUUID: accountUUID}
 	if existing, err := s.loadMeta(name); err == nil {
 		meta.CreatedAt = existing.CreatedAt
 		meta.LastUsed = existing.LastUsed
@@ -431,14 +440,19 @@ func (s *Store) List() ([]Meta, error) {
 	return profiles, nil
 }
 
+// MatchLive identifies which saved profile the live app-data belongs to by
+// comparing account identity (config.json's lastKnownAccountUuid), not the
+// Cookies digest: the sessionKey cookie is a sliding token the app rotates
+// on its own, so a live digest routinely diverges from what was last saved
+// even for the correct account.
 func (s *Store) MatchLive(appDataPath string) (string, Health) {
 	live := filepath.Join(appDataPath, cookiesFile)
 	inspection := InspectCookies(live, s.now())
 	if inspection.Health != HealthUsable {
 		return "", inspection.Health
 	}
-	digest, err := cookieDigest(live)
-	if err != nil {
+	liveUUID, err := readAccountUUID(appDataPath)
+	if err != nil || liveUUID == "" {
 		return "", HealthUnknown
 	}
 	profiles, err := s.List()
@@ -446,15 +460,27 @@ func (s *Store) MatchLive(appDataPath string) (string, Health) {
 		return "", HealthUnknown
 	}
 	for _, meta := range profiles {
-		profileDigest := meta.CookieDigest
-		if profileDigest == "" {
-			profileDigest, _ = cookieDigest(filepath.Join(s.profileDir(meta.Name), cookiesFile))
-		}
-		if profileDigest == digest && s.Inspect(meta.Name).Health == HealthUsable {
+		if meta.AccountUUID != "" && meta.AccountUUID == liveUUID && s.Inspect(meta.Name).Health == HealthUsable {
 			return meta.Name, HealthUsable
 		}
 	}
 	return "", HealthUsable
+}
+
+// readAccountUUID reads lastKnownAccountUuid out of an app-data tree's
+// config.json.
+func readAccountUUID(appDataPath string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(appDataPath, configFile))
+	if err != nil {
+		return "", err
+	}
+	var cfg struct {
+		LastKnownAccountUUID string `json:"lastKnownAccountUuid"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return "", err
+	}
+	return cfg.LastKnownAccountUUID, nil
 }
 
 func (s *Store) UpdateAccountInfo(name, email, plan string) error {

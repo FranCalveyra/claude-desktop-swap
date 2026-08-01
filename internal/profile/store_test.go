@@ -2,6 +2,7 @@ package profile
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -58,6 +59,25 @@ func TestCheckpointCapturesEntireTreeExceptDenylist(t *testing.T) {
 	}
 	if meta.FormatVersion != formatVersion || meta.ObservedHealth != HealthUsable || meta.CookieDigest == "" || meta.SavedAt.IsZero() {
 		t.Fatalf("incomplete v%d metadata: %+v", formatVersion, meta)
+	}
+	if meta.AccountUUID != "live" {
+		t.Fatalf("AccountUUID = %q, want %q from config.json", meta.AccountUUID, "live")
+	}
+}
+
+func TestMatchLiveIgnoresProfilesWithoutAccountUUID(t *testing.T) {
+	store := newTestStore(t)
+	old := store.profileDir("legacy")
+	if err := os.MkdirAll(old, dirPerm); err != nil {
+		t.Fatal(err)
+	}
+	createCookiesDB(t, filepath.Join(old, cookiesFile), ".claude.ai", "sessionKey", 0)
+	mustWriteMeta(t, filepath.Join(old, metaFile), Meta{Name: "legacy", CreatedAt: time.Now(), FormatVersion: formatVersion})
+
+	live := syntheticAppData(t, "live")
+	writeConfigJSON(t, live, "")
+	if name, health := store.MatchLive(live); name != "" || health != HealthUnknown {
+		t.Fatalf("match = %q/%s, want unknown — live has no account identity to match on", name, health)
 	}
 }
 
@@ -207,8 +227,9 @@ func TestRestoreMirrorsProfileAndPreservesDenylistedEntries(t *testing.T) {
 	if _, err := os.Stat(liveOnly); !os.IsNotExist(err) {
 		t.Fatal("live-only entry should be removed by the mirror restore")
 	}
-	got, err := os.ReadFile(filepath.Join(live, "config.json"))
-	if err != nil || string(got) != "saved" {
+	got, err := os.ReadFile(filepath.Join(live, configFile))
+	want := fmt.Sprintf(`{"lastKnownAccountUuid":%q}`, "saved")
+	if err != nil || string(got) != want {
 		t.Fatalf("config.json not mirrored from profile: %q %v", got, err)
 	}
 	for path, want := range denylisted {
@@ -276,6 +297,23 @@ func TestRestoreTrackingFailureRollsBackCookies(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(live, rollbackDirName)); !os.IsNotExist(err) {
 		t.Fatal("rollback backup should not remain after a failed restore")
+	}
+}
+
+func TestMatchLiveIdentifiesByAccountUUIDEvenIfCookiesRotated(t *testing.T) {
+	store := newTestStore(t)
+	saved := syntheticAppData(t, "work")
+	if err := store.Checkpoint("work", saved); err != nil {
+		t.Fatal(err)
+	}
+
+	// Same account (UUID), but the sessionKey cookie rotated since the save —
+	// the sliding 28-day token the app renews on its own.
+	live := syntheticAppData(t, "rotated-session")
+	writeConfigJSON(t, live, "work")
+
+	if name, health := store.MatchLive(live); name != "work" || health != HealthUsable {
+		t.Fatalf("match = %q/%s, want work/usable", name, health)
 	}
 }
 
@@ -347,11 +385,18 @@ func syntheticAppData(t *testing.T, marker string) string {
 		filepath.Join("Local Storage", "leveldb", "CURRENT"),
 		filepath.Join("IndexedDB", "data"),
 		filepath.Join("Session Storage", "data"),
-		"config.json",
 	} {
 		mustWriteFile(t, filepath.Join(dir, path), marker)
 	}
+	writeConfigJSON(t, dir, marker)
 	return dir
+}
+
+// writeConfigJSON writes a minimal config.json whose lastKnownAccountUuid is
+// accountUUID, mirroring the one real field MatchLive reads.
+func writeConfigJSON(t *testing.T, appDataPath, accountUUID string) {
+	t.Helper()
+	mustWriteFile(t, filepath.Join(appDataPath, configFile), fmt.Sprintf(`{"lastKnownAccountUuid":%q}`, accountUUID))
 }
 
 func createCookiesDBWithMarker(t *testing.T, path, marker string) {
