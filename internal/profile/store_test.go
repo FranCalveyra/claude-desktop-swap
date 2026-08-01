@@ -4,37 +4,60 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"testing"
 	"time"
 )
 
-func TestCheckpointCreatesMinimalSecureV2Profile(t *testing.T) {
-	appData := syntheticAppData(t, "live")
+func TestSkipCoversBothDenylistsAndLetsUnknownNamesThrough(t *testing.T) {
+	for name := range cacheDenylist {
+		if !skip(name) {
+			t.Errorf("skip(%q) = false, want true (cache denylist)", name)
+		}
+	}
+	for name := range workDenylist {
+		if !skip(name) {
+			t.Errorf("skip(%q) = false, want true (work denylist)", name)
+		}
+	}
+	for _, name := range []string{cookiesFile, "Local Storage", "IndexedDB", "Session Storage", "config.json", "some-future-anthropic-state.json"} {
+		if skip(name) {
+			t.Errorf("skip(%q) = true, want false — must default to captured so future account state isn't silently lost", name)
+		}
+	}
+}
+
+func TestCheckpointCapturesEntireTreeExceptDenylist(t *testing.T) {
 	store := newTestStore(t)
+	appData := syntheticAppData(t, "live")
+	mustWriteFile(t, filepath.Join(appData, "Cache", "junk"), "regenerable-cache")
+	mustWriteFile(t, filepath.Join(appData, "ant-did"), "device-id")
 	if err := store.Checkpoint("work", appData); err != nil {
 		t.Fatalf("Checkpoint: %v", err)
 	}
 
-	entries, err := os.ReadDir(store.profileDir("work"))
-	if err != nil {
-		t.Fatal(err)
+	profileDir := store.profileDir("work")
+	for _, want := range []string{cookiesFile, "Local Storage", "IndexedDB", "Session Storage", "config.json", metaFile} {
+		if _, err := os.Stat(filepath.Join(profileDir, want)); err != nil {
+			t.Fatalf("profile missing %s: %v", want, err)
+		}
 	}
-	if got := entryNames(entries); len(got) != 3 || got[0] != cookiesFile || got[1] != localStorageDir || got[2] != metaFile {
-		t.Fatalf("profile artifacts = %v, want Cookies, Local Storage and meta.json", got)
+	for _, notWant := range []string{"Cache", "ant-did"} {
+		if _, err := os.Stat(filepath.Join(profileDir, notWant)); !os.IsNotExist(err) {
+			t.Fatalf("profile captured denylisted %s", notWant)
+		}
 	}
-	assertMode(t, store.profileDir("work"), dirPerm)
-	assertMode(t, filepath.Join(store.profileDir("work"), cookiesFile), filePerm)
-	assertMode(t, filepath.Join(store.profileDir("work"), metaFile), filePerm)
-	snapshot := filepath.Join(store.profileDir("work"), localStorageDir, leveldbDir, "CURRENT")
-	assertMode(t, filepath.Join(store.profileDir("work"), localStorageDir, leveldbDir), dirPerm)
-	assertMode(t, snapshot, filePerm)
+	assertMode(t, profileDir, dirPerm)
+	assertMode(t, filepath.Join(profileDir, cookiesFile), filePerm)
+	assertMode(t, filepath.Join(profileDir, metaFile), filePerm)
+
 	meta, err := store.loadMeta("work")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if meta.FormatVersion != 2 || meta.ObservedHealth != HealthUsable || meta.CookieDigest == "" || meta.SavedAt.IsZero() {
-		t.Fatalf("incomplete v2 metadata: %+v", meta)
+	if meta.FormatVersion != formatVersion || meta.ObservedHealth != HealthUsable || meta.CookieDigest == "" || meta.SavedAt.IsZero() {
+		t.Fatalf("incomplete v%d metadata: %+v", formatVersion, meta)
 	}
 }
 
@@ -86,62 +109,51 @@ func TestRestoreRefusesUnsafePermissionsAndIntegrityMismatchBeforeMutation(t *te
 				t.Fatal(err)
 			}
 			live := syntheticAppData(t, "live-before")
-			before, _ := cookieDigest(filepath.Join(live, cookiesFile))
+			before := snapshotTree(t, live)
 			tt.mutate(t, store)
 			if err := store.Restore("work", live); err == nil {
 				t.Fatal("Restore should refuse invalid profile")
 			}
-			after, _ := cookieDigest(filepath.Join(live, cookiesFile))
-			if after != before {
-				t.Fatal("live Cookies changed before validation completed")
+			after := snapshotTree(t, live)
+			if !reflect.DeepEqual(before, after) {
+				t.Fatal("live tree changed before validation completed")
 			}
 		})
 	}
 }
 
-func TestHealthyV1RestoresAndMigratesOnlyOnCheckpoint(t *testing.T) {
+func TestInspectRejectsFormatVersion2Profiles(t *testing.T) {
 	store := newTestStore(t)
-	v1 := store.profileDir("legacy")
-	if err := os.MkdirAll(filepath.Join(v1, "leveldb"), dirPerm); err != nil {
+	old := store.profileDir("legacy")
+	if err := os.MkdirAll(old, dirPerm); err != nil {
 		t.Fatal(err)
 	}
-	createCookiesDB(t, filepath.Join(v1, cookiesFile), ".claude.ai", "sessionKey", 0)
-	mustWriteFile(t, filepath.Join(v1, "leveldb", "legacy"), "keep-until-commit")
-	mustWriteMeta(t, filepath.Join(v1, metaFile), Meta{Name: "legacy", CreatedAt: time.Now()})
-	live := syntheticAppData(t, "other")
+	createCookiesDB(t, filepath.Join(old, cookiesFile), ".claude.ai", "sessionKey", 0)
+	mustWriteMeta(t, filepath.Join(old, metaFile), Meta{Name: "legacy", CreatedAt: time.Now(), FormatVersion: 2})
 
-	if err := store.Restore("legacy", live); err != nil {
-		t.Fatalf("restore v1: %v", err)
+	if got := store.Inspect("legacy").Health; got != HealthUnknown {
+		t.Fatalf("Inspect v2 profile = %s, want unknown", got)
 	}
-	if _, err := os.Stat(filepath.Join(v1, "leveldb", "legacy")); err != nil {
-		t.Fatal("restore eagerly migrated v1")
-	}
-	if err := store.Checkpoint("legacy", live); err != nil {
-		t.Fatalf("checkpoint migrated v1: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(v1, "leveldb")); !os.IsNotExist(err) {
-		t.Fatal("legacy payload remains after v2 commit")
-	}
-	meta, _ := store.loadMeta("legacy")
-	if meta.FormatVersion != 2 {
-		t.Fatalf("format version = %d", meta.FormatVersion)
+
+	live := syntheticAppData(t, "live")
+	if err := store.Restore("legacy", live); err == nil {
+		t.Fatal("Restore should refuse a format_version 2 profile")
 	}
 }
 
-func TestUnusableV1IsNotRepaired(t *testing.T) {
+func TestExpiredProfileIsNotRepaired(t *testing.T) {
 	store := newTestStore(t)
-	v1 := store.profileDir("expired")
-	if err := os.MkdirAll(v1, dirPerm); err != nil {
+	expired := store.profileDir("expired")
+	if err := os.MkdirAll(expired, dirPerm); err != nil {
 		t.Fatal(err)
 	}
-	createCookiesDB(t, filepath.Join(v1, cookiesFile), ".claude.ai", "sessionKey", chromiumTime(store.now().Add(-time.Hour)))
+	createCookiesDB(t, filepath.Join(expired, cookiesFile), ".claude.ai", "sessionKey", chromiumTime(store.now().Add(-time.Hour)))
 	live := syntheticAppData(t, "live")
 	if err := store.Restore("expired", live); err == nil {
-		t.Fatal("expired v1 should require reauthentication")
+		t.Fatal("expired profile should require reauthentication")
 	}
-	meta, _ := store.loadMeta("expired")
-	if meta.FormatVersion == 2 {
-		t.Fatal("expired v1 was synthesized as v2")
+	if _, err := store.loadMeta("expired"); err == nil {
+		t.Fatal("expired profile should not gain synthesized metadata")
 	}
 }
 
@@ -169,59 +181,77 @@ func TestStoreRecoversBackupAndRemovesOrphanStage(t *testing.T) {
 	}
 }
 
-func TestRestoreReplacesCookiesRestoresLocalStorageAndPreservesGlobalState(t *testing.T) {
+func TestRestoreMirrorsProfileAndPreservesDenylistedEntries(t *testing.T) {
 	store := newTestStore(t)
 	saved := syntheticAppData(t, "saved")
 	if err := store.Checkpoint("work", saved); err != nil {
 		t.Fatal(err)
 	}
+
 	live := syntheticAppData(t, "live")
-	for _, name := range []string{cookiesJournalFile, cookiesWALFile, cookiesSHMFile} {
-		mustWriteFile(t, filepath.Join(live, name), "stale")
+	liveOnly := filepath.Join(live, "Preferences")
+	mustWriteFile(t, liveOnly, "stale-live-only")
+	denylisted := map[string]string{
+		"ant-did":                      "device-id",
+		"claude_desktop_config.json":   "mcp-config",
+		filepath.Join("Cache", "junk"): "regenerable-cache",
 	}
-	global := map[string]string{"config.json": "global", "WebStorage/state": "web", "partitions/p": "partition", deviceIDFile: "machine"}
-	for path, content := range global {
+	for path, content := range denylisted {
 		mustWriteFile(t, filepath.Join(live, path), content)
 	}
 
 	if err := store.Restore("work", live); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
-	restored := filepath.Join(live, localStorageDir, leveldbDir, "CURRENT")
-	if got, err := os.ReadFile(restored); err != nil || string(got) != "saved" {
-		t.Fatalf("Local Storage not restored from snapshot: %q %v", got, err)
+
+	if _, err := os.Stat(liveOnly); !os.IsNotExist(err) {
+		t.Fatal("live-only entry should be removed by the mirror restore")
 	}
-	for _, path := range []string{filepath.Join(live, indexedDBDir), filepath.Join(live, sessionStorageDir)} {
-		if _, err := os.Stat(path); !os.IsNotExist(err) {
-			t.Fatalf("ephemeral path remains: %s", path)
-		}
+	got, err := os.ReadFile(filepath.Join(live, "config.json"))
+	if err != nil || string(got) != "saved" {
+		t.Fatalf("config.json not mirrored from profile: %q %v", got, err)
 	}
-	for _, name := range []string{cookiesJournalFile, cookiesWALFile, cookiesSHMFile} {
-		if _, err := os.Stat(filepath.Join(live, name)); !os.IsNotExist(err) {
-			t.Fatalf("sidecar remains: %s", name)
-		}
-	}
-	for path, want := range global {
+	for path, want := range denylisted {
 		got, err := os.ReadFile(filepath.Join(live, path))
 		if err != nil || string(got) != want {
-			t.Fatalf("global %s changed: %q %v", path, got, err)
+			t.Fatalf("denylisted %s changed: %q %v", path, got, err)
 		}
+	}
+	if _, err := os.Stat(filepath.Join(live, rollbackDirName)); !os.IsNotExist(err) {
+		t.Fatal("rollback backup should not remain after a successful restore")
 	}
 }
 
-func TestRestoreWithoutSnapshotLeavesLocalStorageCleared(t *testing.T) {
+func TestRestoreFailureMidCopyLeavesTreeUnchanged(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no POSIX mode bits to make a file unreadable")
+	}
 	store := newTestStore(t)
-	saved := t.TempDir()
-	createCookiesDBWithMarker(t, filepath.Join(saved, cookiesFile), "saved")
+	saved := syntheticAppData(t, "saved")
 	if err := store.Checkpoint("work", saved); err != nil {
 		t.Fatal(err)
 	}
-	live := syntheticAppData(t, "live")
-	if err := store.Restore("work", live); err != nil {
-		t.Fatalf("Restore: %v", err)
+	// "Cookies" and "IndexedDB" sort before "Local Storage", so both are
+	// already copied by the time this unreadable file is hit — a genuine
+	// mid-copy failure, not a rejection at the Inspect gate.
+	poisoned := filepath.Join(store.profileDir("work"), "Local Storage", "leveldb", "CURRENT")
+	if err := os.Chmod(poisoned, 0000); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(live, localStorageDir, leveldbDir)); !os.IsNotExist(err) {
-		t.Fatal("live Local Storage should stay cleared when the profile has no snapshot")
+
+	live := syntheticAppData(t, "live")
+	before := snapshotTree(t, live)
+
+	if err := store.Restore("work", live); err == nil {
+		t.Fatal("Restore should fail when a profile entry cannot be read")
+	}
+
+	after := snapshotTree(t, live)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("live tree changed after a failed restore:\nbefore: %v\nafter:  %v", before, after)
+	}
+	if _, err := os.Stat(filepath.Join(live, rollbackDirName)); !os.IsNotExist(err) {
+		t.Fatal("rollback backup should not remain after a failed restore")
 	}
 }
 
@@ -244,6 +274,9 @@ func TestRestoreTrackingFailureRollsBackCookies(t *testing.T) {
 	if after != before {
 		t.Fatal("live Cookies were not rolled back")
 	}
+	if _, err := os.Stat(filepath.Join(live, rollbackDirName)); !os.IsNotExist(err) {
+		t.Fatal("rollback backup should not remain after a failed restore")
+	}
 }
 
 func TestMatchLiveDoesNotTrustStaleCurrent(t *testing.T) {
@@ -264,18 +297,25 @@ func TestMatchLiveDoesNotTrustStaleCurrent(t *testing.T) {
 	}
 }
 
-func TestWipePreservesMachineAndGlobalFiles(t *testing.T) {
+func TestWipeRemovesAccountStateButPreservesDenylist(t *testing.T) {
 	store := newTestStore(t)
 	appData := syntheticAppData(t, "live")
-	for path, content := range map[string]string{deviceIDFile: "device", "config.json": "config"} {
+	preserved := map[string]string{"ant-did": "device-id", "claude_desktop_config.json": "mcp-config"}
+	for path, content := range preserved {
 		mustWriteFile(t, filepath.Join(appData, path), content)
 	}
 	if err := store.Wipe(appData); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{deviceIDFile, "config.json"} {
-		if _, err := os.Stat(filepath.Join(appData, path)); err != nil {
-			t.Fatalf("%s was removed", path)
+	for path, want := range preserved {
+		got, err := os.ReadFile(filepath.Join(appData, path))
+		if err != nil || string(got) != want {
+			t.Fatalf("denylisted %s was touched: %q %v", path, got, err)
+		}
+	}
+	for _, path := range []string{cookiesFile, "config.json", "Local Storage"} {
+		if _, err := os.Stat(filepath.Join(appData, path)); !os.IsNotExist(err) {
+			t.Fatalf("%s was not wiped", path)
 		}
 	}
 }
@@ -303,7 +343,12 @@ func syntheticAppData(t *testing.T, marker string) string {
 	t.Helper()
 	dir := t.TempDir()
 	createCookiesDBWithMarker(t, filepath.Join(dir, cookiesFile), marker)
-	for _, path := range []string{filepath.Join(localStorageDir, leveldbDir, "CURRENT"), filepath.Join(indexedDBDir, "data"), filepath.Join(sessionStorageDir, "data")} {
+	for _, path := range []string{
+		filepath.Join("Local Storage", "leveldb", "CURRENT"),
+		filepath.Join("IndexedDB", "data"),
+		filepath.Join("Session Storage", "data"),
+		"config.json",
+	} {
 		mustWriteFile(t, filepath.Join(dir, path), marker)
 	}
 	return dir
@@ -354,10 +399,34 @@ func assertMode(t *testing.T, path string, want os.FileMode) {
 	}
 }
 
-func entryNames(entries []os.DirEntry) []string {
-	names := make([]string, len(entries))
-	for i, entry := range entries {
-		names[i] = entry.Name()
+// snapshotTree records the relative path and content of every regular file
+// under root, skipping the rollback backup directory itself.
+func snapshotTree(t *testing.T, root string) map[string]string {
+	t.Helper()
+	snap := map[string]string{}
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			if info.Name() == rollbackDirName {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		snap[rel] = string(data)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	return names
+	return snap
 }
