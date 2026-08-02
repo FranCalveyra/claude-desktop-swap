@@ -14,15 +14,15 @@ import (
 )
 
 const (
-	storeDirName       = ".claude-swap"
-	profilesDirName    = "profiles"
-	currentFileName    = "current"
-	cookiesFile        = "Cookies"
-	networkDirName     = "Network"
-	configFile         = "config.json"
-	rollbackDirName    = ".rollback"
-	metaFile           = "meta.json"
-	formatVersion      = 3
+	storeDirName    = ".claude-swap"
+	profilesDirName = "profiles"
+	currentFileName = "current"
+	cookiesFile     = "Cookies"
+	networkDirName  = "Network"
+	configFile      = "config.json"
+	rollbackDirName = ".rollback"
+	metaFile        = "meta.json"
+	formatVersion   = 3
 
 	dirPerm  os.FileMode = 0700
 	filePerm os.FileMode = 0600
