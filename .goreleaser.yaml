@@ -14,6 +14,7 @@ builds:
       - -s -w -X github.com/FranCalveyra/claude-desktop-swap/cmd.Version={{.Version}}
     goos:
       - darwin
+      - windows
     goarch:
       - amd64
       - arm64
@@ -21,6 +22,9 @@ builds:
 archives:
   - format: tar.gz
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
 
 checksum:
   name_template: "checksums.txt"

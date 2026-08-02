@@ -1,149 +1,107 @@
-# Windows Discovery Checklist
+# Windows Findings
 
-Goal: empirically map what Claude Desktop actually does on Windows — file layout, process model, encryption — before writing `internal/platform/windows.go`. Do NOT skip ahead to implementation. Every shortcut here turns into a regression later.
+What Claude Desktop actually does on Windows, measured against Claude Desktop
+`1.24012.9.0` (Microsoft Store / MSIX build) on Windows 11. This replaces the
+pre-implementation checklist; it is a record, not a plan.
 
-Run all of this in a fresh Windows VM (or Parallels guest) with Claude Desktop installed and logged in.
+## 1. App data is not where it appears to be
 
-## 1. App data layout
+`%APPDATA%\Claude` is **not** the app-data directory on the Store build. Every
+entry under it — including the directory itself — carries a `Target` pointing
+into the package's private store:
 
-Capture the full tree under `%APPDATA%\Claude\` so we can compare to the macOS layout we already know.
-
-```powershell
-Get-ChildItem -Recurse -Force -Path "$env:APPDATA\Claude" |
-    Select-Object FullName, Length, LastWriteTime |
-    Format-Table -AutoSize > "$env:USERPROFILE\Desktop\claude-appdata.txt"
+```
+C:\Users\<user>\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude
 ```
 
-Open `claude-appdata.txt`. Paste back to me. We're looking for:
+That projection exists **only while the packaged app is running**. Stop Claude
+and `%APPDATA%\Claude\Network` disappears entirely.
 
-- [ ] `Cookies` (SQLite file)
-- [ ] `Cookies-journal` (and/or `Cookies-wal` + `Cookies-shm` — important: is Chromium-on-Windows using WAL mode?)
-- [ ] `Local Storage\leveldb\` directory with LevelDB files
-- [ ] `IndexedDB\<some-origin-dir>.leveldb\` — note the exact origin directory name (on macOS it's `https_claude.ai_0.indexeddb.leveldb`)
-- [ ] `Session Storage\` directory
-- [ ] `ant-did` file (or a Windows-equivalent — name may differ)
-- [ ] Anything else that looks session-tied (e.g., `Network\Cookies` — recent Chromium versions moved cookies into a subdirectory on some platforms)
-
-## 2. Network subdir check (critical)
-
-Recent Chromium has been migrating cookies into `Network\Cookies`. If this exists on Windows, our save/restore set is wrong:
+This is the trap that cost the most time. Any check run with Claude *running*
+confirms the wrong answer:
 
 ```powershell
-Test-Path "$env:APPDATA\Claude\Network\Cookies"
+Test-Path "$env:APPDATA\Claude\Network\Cookies"   # True while running, False when stopped
 ```
 
-If `True` → flag it. The Windows implementation may need to point at `Network\Cookies` instead of (or in addition to) the top-level `Cookies`.
+`save` and `use` both stop Claude before reading, so they operate in exactly
+the state where the projection is gone. `AppDataPath` probes the package store
+first and falls back to `%APPDATA%\Claude` for the unpackaged standalone
+installer.
 
-## 3. Process identity
+**Anything verifying a Windows path must be verified with Claude stopped.**
 
-While Claude Desktop is running:
+## 2. Cookies moved under `Network\`
 
-```powershell
-Get-Process | Where-Object { $_.ProcessName -like "*laude*" } |
-    Select-Object Id, ProcessName, Path, MainWindowTitle
+The database is `Network\Cookies`; there is no top-level `Cookies`. Only a
+zero-byte `Network\Cookies-journal` accompanies it — no WAL, no `-shm`.
+`profile.CookiesPath` probes for the relocated file and falls back to the
+legacy top-level path **only** on `ErrNotExist`, so a locked or ACL-blocked
+file is not misreported as missing.
+
+## 3. `claude.exe` is an ambiguous image name
+
+Claude Code installs its own `claude.exe` inside the app-data tree
+(`...\Claude\claude-code\<version>\claude.exe`). Killing by image name would
+take out the user's running CLI sessions along with the desktop app.
+`claudeProcesses` enumerates via `CreateToolhelp32Snapshot`, resolves each
+full path with `QueryFullProcessImageName`, and excludes anything under
+app-data. Processes whose path cannot be read are skipped rather than assumed.
+
+The desktop app runs as one root process plus ~11 children.
+
+## 4. The live cookie database is exclusively locked
+
+While Claude runs, `Network\Cookies` cannot be opened under **any** sharing
+mode, nor copied:
+
+```
+share=Read FAIL   share=Write FAIL   share=ReadWrite FAIL
+share=None FAIL   share=Delete FAIL  Copy-Item FAIL
 ```
 
-Confirm:
-- [ ] Image name (likely `Claude.exe` — but verify)
-- [ ] Full path to the executable (needed for `LaunchApp`)
-- [ ] How many processes? Electron apps spawn helper subprocesses — we need the parent only
+`config.json`, `Local State`, and `Preferences` stay readable. Hence
+`Inspection.Locked`: `MatchLive` treats a lock as evidence of a live session
+and identifies the account from `config.json`, rather than reporting `unknown`
+for as long as the app is open. Session *expiry* genuinely cannot be read in
+that state and is reported as `-`.
 
-## 4. Graceful shutdown behavior
+## 5. Launching
 
-The macOS implementation sends SIGTERM, polls, then falls back to SIGKILL. Windows equivalent is `taskkill` without `/F` (sends `WM_CLOSE`) then `taskkill /F`.
+The Store build installs under a versioned `WindowsApps` directory that is not
+listable without elevation, so there is no exe path to resolve. Shell
+activation is the only route:
 
-Test:
-
-```powershell
-# Graceful — Claude should close cleanly
-taskkill /IM Claude.exe
-# Wait a second, then check if it's actually gone
-Start-Sleep -Seconds 2
-Get-Process Claude -ErrorAction SilentlyContinue
+```
+shell:AppsFolder\Claude_pzs8sxrjxfjjc!Claude
 ```
 
-- [ ] Does graceful `taskkill /IM` actually close Claude, or does it hang? (Electron apps sometimes do, especially if there's an unsaved-prompt modal.)
-- [ ] How long does graceful shutdown take? (informs the poll-then-force timeout)
+`explorer.exe` exits `1` whether activation succeeded or not, so its status is
+useless — `LaunchApp` ignores it and confirms by polling for the process. The
+standalone installer, when present, is launched directly from
+`%LOCALAPPDATA%\AnthropicClaude\claude.exe`.
 
-Then test force kill:
+Stopping works as expected: `taskkill /PID` posts `WM_CLOSE`, with `/F /T` as
+the forced fallback after a 5-second poll.
 
-```powershell
-taskkill /F /IM Claude.exe
-```
+## 6. Encryption
 
-- [ ] Confirm this kills it immediately
-- [ ] After force kill: are journals (`Cookies-journal`, `*-wal`) left behind? (matters for our restore logic)
+`Local State` carries a DPAPI-wrapped `os_crypt.encrypted_key` (base64 prefix
+`RFBBUEk` = `"DPAPI"`), mirroring the macOS keychain arrangement. Since the
+swap path never decrypts anything, this does not affect save/restore.
 
-## 5. Launch behavior
+It is **not implemented**, so account email/plan and the post-restore server
+check in `use` remain macOS-only. Whether cookies use v10 (AES-GCM) or
+App-Bound v20 was never determined — the database is locked while the app runs
+and reading it would require stopping Claude first.
 
-```powershell
-# Find what's registered
-Get-Command Claude -ErrorAction SilentlyContinue
-# Or via Start Menu shortcut
-Start-Process "shell:AppsFolder\<package-id>"  # if it's an MSIX install
-# Or direct
-Start-Process "$env:LOCALAPPDATA\AnthropicClaude\claude.exe"
-```
+## 7. Denylist
 
-Determine:
-- [ ] Is the install path stable (`%LOCALAPPDATA%\AnthropicClaude\claude.exe`) or does it vary?
-- [ ] Per-user vs all-users install — both possible?
-- [ ] Can we launch via `start "" "Claude"` (using a registered URL/protocol/Start Menu name)?
+Every pre-existing entry in both denylists exists on Windows and is correctly
+classified. Two Windows-only additions: `logs` (diagnostic output) and
+`lockfile` (a stale one restored into live app-data leaves Electron's
+single-instance check pointing at a dead process).
 
-## 6. Cookie encryption (DPAPI)
-
-This matters for cross-machine concerns. On Windows, Chromium uses DPAPI (Data Protection API) which ties encrypted blobs to **the user account**, not the machine alone. Encrypted cookies copied between different user accounts on the same machine will NOT decrypt.
-
-Verify this doesn't break our model — profiles for the same user account should still work. Just confirm:
-
-- [ ] Cookies file is binary/encrypted (not plain text)
-- [ ] The `Local State` file contains an `os_crypt.encrypted_key` (similar to macOS)
-
-## 7. Bisect test (mirror the one we ran on macOS)
-
-This proves the minimal restore set works on Windows the same way it did on macOS.
-
-```powershell
-# Quit Claude completely first
-taskkill /F /IM Claude.exe
-
-# Snapshot current logged-in state
-robocopy "$env:APPDATA\Claude" "$env:TEMP\claude-loggedin" /E /COPYALL
-
-# Wipe app data
-Remove-Item -Recurse -Force "$env:APPDATA\Claude"
-
-# Launch Claude — should be logged out
-Start-Process "$env:LOCALAPPDATA\AnthropicClaude\claude.exe"
-# Confirm logged out in UI, then quit Claude
-
-# Save the clean empty state
-robocopy "$env:APPDATA\Claude" "$env:TEMP\claude-empty" /E /COPYALL
-
-# Test A: overlay just Cookies + Local Storage
-Remove-Item -Recurse -Force "$env:APPDATA\Claude"
-robocopy "$env:TEMP\claude-empty" "$env:APPDATA\Claude" /E /COPYALL
-Copy-Item "$env:TEMP\claude-loggedin\Cookies" "$env:APPDATA\Claude\Cookies" -Force
-Remove-Item -Recurse -Force "$env:APPDATA\Claude\Local Storage"
-robocopy "$env:TEMP\claude-loggedin\Local Storage" "$env:APPDATA\Claude\Local Storage" /E /COPYALL
-Start-Process "$env:LOCALAPPDATA\AnthropicClaude\claude.exe"
-```
-
-- [ ] Record: logged in or out after Test A?
-- [ ] If logged out, extend the overlay with `IndexedDB`, `ant-did`, `Session Storage` and retry
-
-Restore your original state when done:
-
-```powershell
-Remove-Item -Recurse -Force "$env:APPDATA\Claude"
-robocopy "$env:TEMP\claude-loggedin" "$env:APPDATA\Claude" /E /COPYALL
-```
-
-## 8. Report back
-
-Send back:
-1. The contents of `claude-appdata.txt`
-2. Results of each checkbox above
-3. Anything that surprised you or didn't match macOS
-
-With that data we can write `windows.go` against reality instead of assumptions.
+`Partitions`, `WebStorage`, `Shared Dictionary`, `DIPS`, `InterestGroups`, and
+`SharedStorage` are captured by default. They were classified by reasoning
+about what they hold, not by isolating each one in a switch test.
