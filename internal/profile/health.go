@@ -34,6 +34,12 @@ type Inspection struct {
 	// expiring in two days is still fully usable, and the Health guards in
 	// save/use would refuse it.
 	ExpiresAt time.Time
+	// Locked means the database exists but cannot be opened at all. Windows
+	// Claude holds the live Cookies file denying every sharing mode, so this
+	// is what a running app looks like from outside. Nothing about the
+	// session's contents is knowable while it holds, but the lock itself is
+	// evidence that a session is live — see Store.MatchLive.
+	Locked bool
 }
 
 // RenewalWindow is how close to expiry a session starts being reported as
@@ -89,6 +95,9 @@ func inspectCookiesWithTimeout(path string, now time.Time, timeout time.Duration
 	} else if err != nil {
 		return Inspection{Health: HealthUnknown, Reason: "Cookies database cannot be inspected"}
 	}
+	if !readable(path) {
+		return Inspection{Health: HealthUnknown, Reason: "Cookies database is held open by a running Claude Desktop", Locked: true}
+	}
 
 	dsn := &url.URL{Scheme: "file", Path: sqlitePath(path)}
 	query := dsn.Query()
@@ -125,6 +134,20 @@ func inspectCookiesWithTimeout(path string, now time.Time, timeout time.Duration
 		return Inspection{Health: HealthExpired, Reason: "Claude session has expired; reauthentication is required", ExpiresAt: expiresAt}
 	}
 	return Inspection{Health: HealthUsable, Reason: "Claude session evidence is locally usable", ExpiresAt: expiresAt}
+}
+
+// readable reports whether path can be opened for reading. Windows Claude
+// opens the live Cookies database denying all sharing, so a running app makes
+// it unopenable rather than merely busy; POSIX has no mandatory locking, so
+// this short-circuit only ever fires on Windows in practice. It runs before
+// the sqlite open so a lock costs nothing instead of the full busy_timeout.
+func readable(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	_ = f.Close()
+	return true
 }
 
 // volatileCookieNames are device/IP-bound Cloudflare cookies that hard-fail
