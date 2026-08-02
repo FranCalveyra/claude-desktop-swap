@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-02
+
 ### Added
 - Windows support. `save`, `add`, `use`, `list`, `status`, and `delete` all work on Windows 11 against both the Microsoft Store (MSIX) and standalone installs.
 - Windows release artifacts (`claude-desktop-swap_windows_amd64.zip`, `..._arm64.zip`) and PowerShell install instructions.
