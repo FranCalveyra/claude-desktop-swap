@@ -76,13 +76,43 @@ claude-desktop-swap status             # show which profile is active (if tracka
 | OS      | Claude app data path                                      |
 |---------|-----------------------------------------------------------|
 | macOS   | `~/Library/Application Support/Claude/`                   |
-| Windows | `%APPDATA%\Claude\`                                        |
+| Windows (Store/MSIX) | `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\` |
+| Windows (standalone) | `%APPDATA%\Claude\`                            |
+
+On Windows the Store build is MSIX-packaged, and `%APPDATA%\Claude` is **not**
+the app-data directory — it is the container's projection of the package's
+private store, which exists only while the packaged app is running. `save` and
+`use` stop Claude before reading, so they would find nothing there. Resolution
+probes the package store first and falls back to `%APPDATA%\Claude` for the
+unpackaged standalone installer. Verify with the app *stopped*: a check that
+passes while it runs proves nothing.
+
+Three more Windows invariants, all non-obvious and all load-bearing:
+
+- The cookie database is at **`Network\Cookies`**, not the top-level `Cookies`
+  macOS uses. `profile.CookiesPath` probes for it and only falls back to the
+  legacy path on a genuine `ErrNotExist` — any other stat error must keep the
+  relocated path, or a locked/ACL-blocked file gets misreported as "missing".
+- Claude Code ships its own **`claude.exe` inside the app-data tree**, so
+  matching processes by image name would kill the user's CLI sessions.
+  `claudeProcesses` filters by executable path, and skips processes whose path
+  cannot be read rather than assuming they are Claude Desktop's.
+- Claude holds the live `Cookies` file open **denying every sharing mode**, so
+  it cannot be read or even copied while the app runs. `Inspection.Locked`
+  carries that state; `MatchLive` treats it as evidence of a live session
+  (identity still comes from the readable `config.json`) instead of failing.
 
 ## Cookie Encryption
 
 Chromium encrypts cookie values using the OS keychain. On the **same machine**, all profiles share the same encryption key — so encrypted blobs can be copied verbatim between profile snapshots without decryption. Capture and restore work at the level of whole files/directories (denylist-filtered copy in, mirror copy out) — nothing in that path parses or decrypts `Cookies`, `config.json`, or any other captured file. The **swap path never decrypts anything; always work with raw encrypted blobs and opaque files.**
 
 **Exception — account info (`internal/account`):** the `list`/picker account-info feature and the post-restore verification in `use` decrypt the `sessionKey` in memory to call the claude.ai API (for email/plan, and to detect a server-rejected session). This is the only place decryption is allowed. It is transient (never written to disk), only the resulting email/plan/rejection status are persisted, and the raw session is never stored.
+
+This exception is **macOS-only**: the decryptor reads the key from the macOS
+keychain, and `internal/account` is built behind `//go:build darwin` with a
+no-op fallback elsewhere. Windows would need DPAPI (`Local State` carries a
+`DPAPI`-prefixed `os_crypt.encrypted_key`), which is not implemented — so on
+Windows `list` shows no email/plan and `use` skips the server check.
 
 ## Security Notes
 

@@ -14,17 +14,15 @@ import (
 )
 
 const (
-	storeDirName       = ".claude-swap"
-	profilesDirName    = "profiles"
-	currentFileName    = "current"
-	cookiesFile        = "Cookies"
-	cookiesJournalFile = "Cookies-journal"
-	cookiesWALFile     = "Cookies-wal"
-	cookiesSHMFile     = "Cookies-shm"
-	configFile         = "config.json"
-	rollbackDirName    = ".rollback"
-	metaFile           = "meta.json"
-	formatVersion      = 3
+	storeDirName    = ".claude-swap"
+	profilesDirName = "profiles"
+	currentFileName = "current"
+	cookiesFile     = "Cookies"
+	networkDirName  = "Network"
+	configFile      = "config.json"
+	rollbackDirName = ".rollback"
+	metaFile        = "meta.json"
+	formatVersion   = 3
 
 	dirPerm  os.FileMode = 0700
 	filePerm os.FileMode = 0600
@@ -46,6 +44,11 @@ var cacheDenylist = map[string]bool{
 	"claude-code-vm":            true,
 	"ca-bundle.pem":             true,
 	"extensions-blocklist.json": true,
+	"logs":                      true,
+	// Windows only, and it must not travel: restoring a stale lockfile into
+	// live app-data leaves Electron's single-instance check pointing at a
+	// process that no longer exists.
+	"lockfile": true,
 }
 
 // workDenylist covers entries that describe the machine or in-flight work
@@ -70,6 +73,24 @@ var workDenylist = map[string]bool{
 // new state Anthropic adds later is captured automatically.
 func skip(name string) bool {
 	return cacheDenylist[name] || workDenylist[name]
+}
+
+// CookiesPath resolves the Cookies database inside an app-data tree or inside
+// a profile's mirror of one. Chromium relocated the file under Network/,
+// which is the only place Windows Claude writes it, while macOS Claude still
+// writes the legacy top-level file — so the location is probed rather than
+// assumed from the OS, and a tree that has neither resolves to the top-level
+// path so the caller reports it missing.
+//
+// Only a genuine absence falls back. Any other stat failure keeps the
+// relocated path so the caller reports why it could not be read, rather than
+// silently reporting the legacy path as missing.
+func CookiesPath(root string) string {
+	relocated := filepath.Join(root, networkDirName, cookiesFile)
+	if _, err := os.Stat(relocated); !errors.Is(err, os.ErrNotExist) {
+		return relocated
+	}
+	return filepath.Join(root, cookiesFile)
 }
 
 type Meta struct {
@@ -134,7 +155,7 @@ func (s *Store) Save(name, appDataPath string) error {
 }
 
 func (s *Store) Checkpoint(name, appDataPath string) error {
-	live := filepath.Join(appDataPath, cookiesFile)
+	live := CookiesPath(appDataPath)
 	if inspection := InspectCookies(live, s.now()); inspection.Health != HealthUsable {
 		return fmt.Errorf("refuse checkpoint of %s session: %s", inspection.Health, inspection.Reason)
 	}
@@ -157,7 +178,7 @@ func (s *Store) Checkpoint(name, appDataPath string) error {
 		return err
 	}
 
-	stagedCookies := filepath.Join(stage, cookiesFile)
+	stagedCookies := CookiesPath(stage)
 	digest, err := cookieDigest(stagedCookies)
 	if err != nil {
 		return err
@@ -218,7 +239,7 @@ func (s *Store) Inspect(name string) Inspection {
 	if err := validateSecureTree(s.profileDir(name)); err != nil {
 		return Inspection{Health: HealthUnknown, Reason: err.Error()}
 	}
-	cookies := filepath.Join(s.profileDir(name), cookiesFile)
+	cookies := CookiesPath(s.profileDir(name))
 	inspection := InspectCookies(cookies, s.now())
 	if inspection.Health != HealthUsable {
 		return inspection
@@ -306,7 +327,7 @@ func (s *Store) Restore(name, appDataPath string) error {
 		copied = append(copied, entryName)
 	}
 
-	live := filepath.Join(appDataPath, cookiesFile)
+	live := CookiesPath(appDataPath)
 	if got := InspectCookies(live, s.now()); got.Health != HealthUsable {
 		rollback()
 		return fmt.Errorf("restored live cookies are %s: %s", got.Health, got.Reason)
@@ -417,7 +438,7 @@ func (s *Store) Wipe(appDataPath string) error {
 }
 
 func HasActiveSession(appDataPath string) bool {
-	return InspectCookies(filepath.Join(appDataPath, cookiesFile), time.Now()).Health == HealthUsable
+	return InspectCookies(CookiesPath(appDataPath), time.Now()).Health == HealthUsable
 }
 
 func (s *Store) List() ([]Meta, error) {
@@ -452,9 +473,13 @@ func (s *Store) List() ([]Meta, error) {
 // on its own, so a live digest routinely diverges from what was last saved
 // even for the correct account.
 func (s *Store) MatchLive(appDataPath string) (string, Health) {
-	live := filepath.Join(appDataPath, cookiesFile)
-	inspection := InspectCookies(live, s.now())
-	if inspection.Health != HealthUsable {
+	inspection := InspectCookies(CookiesPath(appDataPath), s.now())
+	// A locked database is not a broken one: it means Claude Desktop is
+	// running and holding the file, which is itself evidence of a live
+	// session. Identity below comes from config.json, which stays readable,
+	// so the match still works — without this, status on Windows would
+	// report "unknown" for as long as the app is open.
+	if inspection.Health != HealthUsable && !inspection.Locked {
 		return "", inspection.Health
 	}
 	liveUUID, err := readAccountUUID(appDataPath)
@@ -586,7 +611,7 @@ func (s *Store) recoverProfiles() error {
 }
 
 func (s *Store) ProfileCookiesPath(name string) string {
-	return filepath.Join(s.profileDir(name), cookiesFile)
+	return CookiesPath(s.profileDir(name))
 }
 
 func (s *Store) profileDir(name string) string { return filepath.Join(s.profilesPath(), name) }

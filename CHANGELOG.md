@@ -12,6 +12,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - A persistent Bubble Tea dashboard on bare `claude-desktop-swap` invocation, covering profile status, activation, save, add, and delete workflows.
 - Confirmation, progress, result, and refresh states for interactive operations while retaining all existing scriptable subcommands.
+## [0.8.0] - 2026-08-02
+
+### Added
+- Windows support. `save`, `add`, `use`, `list`, `status`, and `delete` all work on Windows 11 against both the Microsoft Store (MSIX) and standalone installs.
+- Windows release artifacts (`claude-desktop-swap_windows_amd64.zip`, `..._arm64.zip`) and PowerShell install instructions.
+- The release workflow now runs the test suite on Linux, macOS, and Windows before publishing, so platform-specific tests gate the artifacts they ship.
+
+### Fixed
+- The cookie database location is now detected at runtime. Windows Claude keeps it at `Network\Cookies`; macOS keeps it at the top level of app-data.
+- `status` and profile matching no longer report `unknown` while Claude Desktop is running on Windows, where the live cookie database is held open denying all sharing. Account identity is read from `config.json` instead.
+
+### Changed
+- Documentation now describes the denylist-based capture model. The README still described the pre-0.4 allowlist, and claimed `config.json` was preserved rather than captured — it carries the account identity and has been captured since the denylist rewrite.
 
 ## [0.3.1] - 2026-06-19
 

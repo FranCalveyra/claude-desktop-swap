@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"path/filepath"
 	"time"
 
 	"github.com/FranCalveyra/claude-desktop-swap/internal/profile"
@@ -13,7 +12,7 @@ import (
 // the app keeps rotating the live sessionKey, so the snapshot under-reports
 // how long the active account actually has.
 func liveSessionExpiry(appData string, now time.Time) time.Time {
-	return profile.InspectCookies(filepath.Join(appData, liveCookiesFile), now).ExpiresAt
+	return profile.InspectCookies(profile.CookiesPath(appData), now).ExpiresAt
 }
 
 func expiryLabel(expiresAt, now time.Time) string {

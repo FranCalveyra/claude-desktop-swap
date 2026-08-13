@@ -367,6 +367,50 @@ func TestProfileCookiesPathResolvesUnderProfile(t *testing.T) {
 	}
 }
 
+func TestCookiesPathPrefersRelocatedNetworkDatabase(t *testing.T) {
+	root := t.TempDir()
+	if got, want := CookiesPath(root), filepath.Join(root, cookiesFile); got != want {
+		t.Fatalf("CookiesPath = %q, want the legacy top-level path %q", got, want)
+	}
+
+	relocated := filepath.Join(root, networkDirName, cookiesFile)
+	mustWriteFile(t, relocated, "db")
+	if got := CookiesPath(root); got != relocated {
+		t.Fatalf("CookiesPath = %q, want %q", got, relocated)
+	}
+}
+
+// Windows Claude writes its cookie database only under Network/, so a profile
+// captured there must round-trip through save and restore unchanged.
+func TestCheckpointAndRestoreHandleRelocatedCookies(t *testing.T) {
+	store := newTestStore(t)
+	live := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(live, networkDirName), dirPerm); err != nil {
+		t.Fatal(err)
+	}
+	createCookiesDBWithMarker(t, filepath.Join(live, networkDirName, cookiesFile), "work")
+	writeConfigJSON(t, live, "work")
+
+	if err := store.Checkpoint("work", live); err != nil {
+		t.Fatal(err)
+	}
+	saved := filepath.Join(store.profileDir("work"), networkDirName, cookiesFile)
+	if _, err := os.Stat(saved); err != nil {
+		t.Fatalf("profile did not capture the relocated database: %v", err)
+	}
+	if health := store.Inspect("work").Health; health != HealthUsable {
+		t.Fatalf("Inspect = %s, want usable", health)
+	}
+
+	target := t.TempDir()
+	if err := store.Restore("work", target); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(target, networkDirName, cookiesFile)); err != nil {
+		t.Fatalf("restore did not place the relocated database: %v", err)
+	}
+}
+
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
 	store, err := newStore(t.TempDir())

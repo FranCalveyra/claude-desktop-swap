@@ -13,9 +13,9 @@ Switch between multiple Claude Desktop accounts without logging out of any of th
 
 ## How it works
 
-Claude Desktop is an Electron app whose root `Cookies` SQLite database is the authoritative local session evidence. `claude-desktop-swap` stores that database as a named profile and swaps it only after Claude and its helper processes have fully stopped.
+Claude Desktop is an Electron app whose whole app-data directory carries the signed-in state — the `Cookies` SQLite database, Local Storage, IndexedDB, Session Storage, and `config.json`. `claude-desktop-swap` stores a filtered mirror of that entire tree as a named profile and swaps it only after Claude and its helper processes have fully stopped.
 
-Before restoring the incoming profile, a switch checkpoints the currently tracked outgoing profile. This preserves cookie refreshes made since the previous switch. Local Storage, IndexedDB, and Session Storage are volatile account caches: they are cleared after replacement so Claude can rebuild them from the restored cookies.
+Before restoring the incoming profile, a switch checkpoints the currently tracked outgoing profile. This preserves the cookie refreshes Claude made since the previous switch.
 
 ## Installation
 
@@ -32,6 +32,17 @@ sudo mv claude-desktop-swap /usr/local/bin/
 curl -L https://github.com/FranCalveyra/claude-desktop-swap/releases/latest/download/claude-desktop-swap_darwin_amd64.tar.gz | tar xz
 sudo mv claude-desktop-swap /usr/local/bin/
 ```
+
+**Windows (PowerShell)**
+```powershell
+$dir = "$env:LOCALAPPDATA\Programs\claude-desktop-swap"
+New-Item -ItemType Directory -Force -Path $dir | Out-Null
+Invoke-WebRequest -Uri https://github.com/FranCalveyra/claude-desktop-swap/releases/latest/download/claude-desktop-swap_windows_amd64.zip -OutFile "$env:TEMP\cds.zip"
+Expand-Archive -Path "$env:TEMP\cds.zip" -DestinationPath $dir -Force
+[Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "User") + ";$dir", "User")
+```
+
+Open a new terminal afterwards so the updated `Path` takes effect. On Arm devices substitute `claude-desktop-swap_windows_arm64.zip`.
 
 ### Build from source
 
@@ -96,20 +107,22 @@ claude-desktop-swap use work
 
 ## Profile storage
 
-Profiles are stored at `~/.claude-swap/profiles/<name>/` and contain:
+Profiles are stored at `~/.claude-swap/profiles/<name>/` as a filtered mirror of Claude's app-data tree, alongside a `meta.json` holding non-secret format, identity, health, timestamp, and integrity metadata.
 
-| File | Contents |
-|------|----------|
-| `Cookies` | SQLite copy of your session cookies |
-| `meta.json` | Non-secret format, identity, local health, timestamp, and integrity metadata |
+Two denylists decide what never enters a profile:
 
-Version 2 profiles contain only these two files. Directories use `0700`; files use `0600`. Cookie values are never selected, decrypted, printed, or logged.
+- **Cache and runtime state**, regenerable on Claude's next launch — `Cache`, `Code Cache`, `GPUCache`, `blob_storage`, `Crashpad`, `logs`, and similar.
+- **Machine and in-flight work state**, which must survive an account switch untouched — `ant-did`, `claude_desktop_config.json`, `claude-code-sessions`, `git-worktrees.json`, `window-state.json`, and similar.
 
-Version 1 profiles remain readable without eager migration. A locally usable v1 profile restores normally and becomes v2 only after its next successful outgoing checkpoint. Expired or incomplete v1 profiles cannot be repaired from legacy Local Storage or IndexedDB data; sign in again and save a fresh profile.
+Everything else is captured by default, so account state Anthropic adds later travels with the profile instead of silently leaking between accounts.
+
+Directories use `0700`; files use `0600`. Cookie values are never selected, decrypted, printed, or logged.
+
+Profiles written by older versions are rejected as an outdated format rather than migrated. Run `save <name>` while signed into that account to re-save it.
 
 Health is based on non-secret local SQLite evidence and is reported as `usable`, `expired`, `missing`, or `unknown`. Expired, missing, unknown, unsafe, or integrity-mismatched profiles are never restored. Server-side expiry cannot be extended by this tool.
 
-The active profile is tracked at `~/.claude-swap/current`, but `status` reports a profile name only when live Cookies actually match a usable saved profile.
+The active profile is tracked at `~/.claude-swap/current`, but `status` identifies the live account by `config.json`'s `lastKnownAccountUuid` rather than by that file or by a cookie digest — the `sessionKey` is a sliding token Claude rotates on its own, so a live digest routinely diverges from what was last saved even for the correct account.
 
 ## Session expiry
 
@@ -123,17 +136,26 @@ Expiry is advisory, never a block: a session expiring tomorrow is still perfectl
 
 A switch follows: target preflight → verified full stop → outgoing WAL checkpoint and atomic profile commit → staged incoming replacement → volatile-cache clearing → active tracking → launch. Interrupted profile writes retain the previous generation for recovery. A failed incoming replacement rolls back live Cookies and does not report success. If launch fails after commit, the incoming profile remains active and Claude can be opened manually.
 
-Only `Cookies`, `Cookies-journal`, `Cookies-wal`, `Cookies-shm`, `Local Storage/leveldb`, `IndexedDB`, and `Session Storage` participate in session replacement or cache clearing. Global and machine state—including `config.json`, `WebStorage`, `partitions`, and `ant-did`—is preserved.
+Replacement operates on whole top-level app-data entries: every entry that isn't denylisted is moved into a same-directory rollback backup, the profile is copied in its place, and the backup is discarded only once the copy has committed cleanly. Denylisted entries are never read, replaced, or removed, so machine and work state stays put across a switch.
 
 ## Platform support
 
 | OS | Status |
 |----|--------|
 | macOS | Supported |
-| Windows | Planned |
+| Windows | Supported |
+
+Claude Desktop stores its cookie database under `Network\Cookies` on Windows and at the top level of app-data on macOS; the location is detected at runtime. Three Windows-specific behaviours are worth knowing:
+
+- The Microsoft Store build is MSIX-packaged, so its real app-data lives at `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude`. `%APPDATA%\Claude` is only a container projection that exists while the app is running. Profiles are captured from the backing store, so they work with Claude stopped. The standalone installer is unpackaged and uses `%APPDATA%\Claude` directly; both are detected automatically.
+
+- Claude Code installs its own `claude.exe` inside `%APPDATA%\Claude`. Profile switching matches processes by executable path, not image name, so running CLI sessions are left alone.
+- Windows Claude holds the live cookie database open denying all sharing, so its expiry cannot be read while the app runs — `status` shows the active profile but reports the session expiry as `-`. Quit Claude to see it. `save` and `use` are unaffected because they stop the app first.
+
+Account email and plan (`list --accounts`, and the post-restore server check in `use`) remain macOS-only: they need the cookie decryption key, which is read from the macOS keychain and has no Windows equivalent implemented yet.
 
 ## Security
 
 Cookie values are encrypted by Chromium using your OS keychain. `claude-desktop-swap` never decrypts them — it copies raw encrypted blobs, which are only usable on the machine where they were created.
 
-Profile directories are created with `0700` permissions and profile files with `0600`. Restoration refuses broader permissions.
+Profile directories are created with `0700` permissions and profile files with `0600`. On macOS, restoration refuses broader permissions. Windows has no POSIX mode bits — `os.FileMode` there is synthesized from file attributes and duplicates the owner bits — so that check is skipped and access is governed by NTFS ACLs, which this tool does not inspect.

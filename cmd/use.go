@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/FranCalveyra/claude-desktop-swap/internal/account"
@@ -12,9 +11,6 @@ import (
 	"github.com/FranCalveyra/claude-desktop-swap/internal/profile"
 	"github.com/spf13/cobra"
 )
-
-// liveCookiesFile is the Chromium Cookies database filename inside app-data.
-const liveCookiesFile = "Cookies"
 
 var cmdUse = &cobra.Command{
 	Use:   "use [name]",
@@ -107,7 +103,7 @@ func switchProfileWith(name string, store switchStore, p platform.Platform, out 
 		return fmt.Errorf("restore profile: %w", err)
 	}
 
-	if info := verify(filepath.Join(appData, liveCookiesFile)); info.Rejected {
+	if info := verify(profile.CookiesPath(appData)); info.Rejected {
 		return fmt.Errorf("profile %q was rejected by the server; sign in again in Claude Desktop and re-save it", name)
 	}
 
