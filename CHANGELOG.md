@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-08-13
+
+### Added
+- A persistent Bubble Tea dashboard on bare `claude-desktop-swap` invocation, covering profile status, activation, save, add, and delete workflows.
+- Confirmation, progress, result, and refresh states for interactive operations while retaining all existing scriptable subcommands.
+
 ## [0.3.1] - 2026-06-19
 
 ### Added

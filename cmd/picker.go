@@ -12,10 +12,17 @@ import (
 )
 
 var (
-	pickerTitleStyle  = lipgloss.NewStyle().Bold(true)
-	pickerHeaderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	pickerHelpStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	pickerBadgeStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	pickerTitleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("14"))
+	pickerHeaderStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
+	pickerHelpStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	pickerBadgeStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	pickerCursorStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("14"))
+	pickerSelectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
+	pickerPromptStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
+	pickerProgressStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("14"))
+	pickerUsableStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	pickerWarningStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
+	pickerErrorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 )
 
 type pickerModel struct {
@@ -143,7 +150,17 @@ func (m pickerModel) View() string {
 	for i, p := range m.profiles {
 		cursor := " "
 		if i == m.cursor {
-			cursor = ">"
+			cursor = pickerCursorStyle.Render(">")
+		}
+		rowNumber := fmt.Sprintf("%02d", i+1)
+		account := padRight(accountLabel(p), accountWidth)
+		plan := padRight(planLabel(p), planWidth)
+		last := padRight(relativeLastUsed(p.LastUsed), lastWidth)
+		if i == m.cursor {
+			rowNumber = pickerSelectedStyle.Render(rowNumber)
+			account = pickerSelectedStyle.Render(account)
+			plan = pickerSelectedStyle.Render(plan)
+			last = pickerSelectedStyle.Render(last)
 		}
 
 		badge := ""
@@ -152,20 +169,20 @@ func (m pickerModel) View() string {
 		}
 
 		fmt.Fprintf(&b,
-			"  %s %02d %s  %s  %s  %s  %s%s\n",
+			"  %s %s %s  %s  %s  %s  %s%s\n",
 			cursor,
-			i+1,
-			padRight(accountLabel(p), accountWidth),
-			padRight(planLabel(p), planWidth),
-			padRight(healthLabel(p.ObservedHealth), healthWidth),
-			padRight(metaExpiryLabel(p, m.now), expiresWidth),
-			padRight(relativeLastUsed(p.LastUsed), lastWidth),
+			rowNumber,
+			account,
+			plan,
+			padRight(styledHealthLabel(p.ObservedHealth), healthWidth),
+			padRight(styledExpiryLabel(p, m.now), expiresWidth),
+			last,
 			badge,
 		)
 	}
 
 	b.WriteString("\n  ")
-	b.WriteString(pickerHelpStyle.Render("Keys: ↑/↓ or j/k, Enter select, 1-9 type, Backspace edit, Esc or q quit"))
+	b.WriteString(pickerHelpStyle.Render("Keys: Up/Down or j/k, Enter select, 1-9 type, Backspace edit, Esc or q quit"))
 	b.WriteString("\n")
 	return b.String()
 }
@@ -181,13 +198,43 @@ func (m pickerModel) columnWidths() (accountWidth, planWidth, healthWidth, expir
 		accountWidth = max(accountWidth, lipgloss.Width(accountLabel(p)))
 		planWidth = max(planWidth, lipgloss.Width(planLabel(p)))
 		healthWidth = max(healthWidth, lipgloss.Width(healthLabel(p.ObservedHealth)))
-		expiresWidth = max(expiresWidth, lipgloss.Width(metaExpiryLabel(p, m.now)))
+		expiresWidth = max(expiresWidth, lipgloss.Width(asciiExpiryLabel(p, m.now)))
 		lastWidth = max(lastWidth, lipgloss.Width(relativeLastUsed(p.LastUsed)))
 	}
 
 	planWidth = max(planWidth, 8)
 	lastWidth = max(lastWidth, 6)
 	return accountWidth, planWidth, healthWidth, expiresWidth, lastWidth
+}
+
+func styledHealthLabel(health profile.Health) string {
+	label := healthLabel(health)
+	switch health {
+	case profile.HealthUsable:
+		return pickerUsableStyle.Render(label)
+	case profile.HealthExpired, profile.HealthMissing:
+		return pickerErrorStyle.Render(label)
+	case profile.HealthUnknown:
+		return pickerWarningStyle.Render(label)
+	default:
+		return label
+	}
+}
+
+func asciiExpiryLabel(p profile.Meta, now time.Time) string {
+	return strings.ReplaceAll(metaExpiryLabel(p, now), " ⚠", " !")
+}
+
+func styledExpiryLabel(p profile.Meta, now time.Time) string {
+	label := asciiExpiryLabel(p, now)
+	switch renewalFor(p, now) {
+	case profile.RenewalExpired:
+		return pickerErrorStyle.Render(label)
+	case profile.RenewalSoon:
+		return pickerWarningStyle.Render(label)
+	default:
+		return label
+	}
 }
 
 func accountLabel(p profile.Meta) string {

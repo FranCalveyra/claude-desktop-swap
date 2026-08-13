@@ -6,9 +6,12 @@ import (
 
 	"github.com/FranCalveyra/claude-desktop-swap/internal/profile"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 func TestPickerShowsHealthWithoutSecretData(t *testing.T) {
+	setTestColorProfile(t, termenv.Ascii)
 	m := newPickerModel([]profile.Meta{{Name: "work", ObservedHealth: profile.HealthExpired}}, "work")
 	view := m.View()
 	if !strings.Contains(view, "expired") {
@@ -16,6 +19,22 @@ func TestPickerShowsHealthWithoutSecretData(t *testing.T) {
 	}
 	if strings.Contains(view, "sessionKey") || strings.Contains(view, "secret") {
 		t.Fatalf("view exposed session data: %q", view)
+	}
+}
+
+func TestPickerUsesCyanFocusAndSemanticHealthColors(t *testing.T) {
+	setTestColorProfile(t, termenv.ANSI)
+	m := newPickerModel([]profile.Meta{
+		{Name: "usable", ObservedHealth: profile.HealthUsable},
+		{Name: "expired", ObservedHealth: profile.HealthExpired},
+		{Name: "unknown", ObservedHealth: profile.HealthUnknown},
+	}, "")
+
+	view := m.View()
+	for _, code := range []string{"96m", "36m", "92m", "91m", "93m"} {
+		if !strings.Contains(view, code) {
+			t.Fatalf("view missing ANSI color %q: %q", code, view)
+		}
 	}
 }
 
@@ -36,4 +55,11 @@ func TestPickerAllowsUsableSelection(t *testing.T) {
 	if got := updated.(pickerModel).chosen; got != "work" {
 		t.Fatalf("chosen = %q", got)
 	}
+}
+
+func setTestColorProfile(t *testing.T, profile termenv.Profile) {
+	t.Helper()
+	previous := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(profile)
+	t.Cleanup(func() { lipgloss.SetColorProfile(previous) })
 }
