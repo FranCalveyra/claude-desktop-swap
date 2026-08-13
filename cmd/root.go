@@ -21,6 +21,10 @@ var root = &cobra.Command{
 	Use:     "claude-desktop-swap",
 	Short:   "Switch between Claude Desktop accounts without logging out",
 	Version: Version,
+	Args:    cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runTUI()
+	},
 }
 
 func Execute() {

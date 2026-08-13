@@ -53,6 +53,9 @@ go install github.com/FranCalveyra/claude-desktop-swap@latest
 ## Usage
 
 ```sh
+# Open the interactive account dashboard
+claude-desktop-swap
+
 # Save your current session as a named profile (quit Claude first)
 claude-desktop-swap save personal
 
@@ -74,6 +77,10 @@ claude-desktop-swap status --check
 # Delete a profile
 claude-desktop-swap delete old-account
 ```
+
+The dashboard exposes the same save, add, activate, delete, list, and status
+flows with confirmations and progress feedback. Existing subcommands remain
+available for scripts and direct use.
 
 ## First-time setup
 
