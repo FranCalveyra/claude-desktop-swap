@@ -35,7 +35,7 @@ const (
 type tuiSnapshot struct {
 	profiles []profile.Meta
 	current  string
-	status   string
+	status   statusReport
 	now      time.Time
 }
 
@@ -64,7 +64,7 @@ type tuiModel struct {
 	backend  tuiBackend
 	profiles []profile.Meta
 	current  string
-	status   string
+	status   statusReport
 	now      time.Time
 	cursor   int
 	mode     tuiMode

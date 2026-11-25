@@ -150,14 +150,10 @@ func panelView(title, message, help string, messageStyle lipgloss.Style) string 
 	return "\n  " + pickerTitleStyle.Render(title) + "\n\n  " + messageStyle.Render(message) + "\n\n  " + pickerHelpStyle.Render(help) + "\n"
 }
 
-func styledStatus(status string) string {
-	lines := strings.Split(status, "\n")
-	for i, line := range lines {
-		if strings.HasPrefix(line, "Warning:") {
-			lines[i] = pickerWarningStyle.Render(line)
-		} else {
-			lines[i] = pickerPromptStyle.Render(line)
-		}
+func styledStatus(r statusReport) string {
+	lines := []string{pickerPromptStyle.Render(r.line)}
+	for _, w := range r.warnings {
+		lines = append(lines, pickerWarningStyle.Render("Warning: "+w))
 	}
 	return strings.Join(lines, "\n  ")
 }

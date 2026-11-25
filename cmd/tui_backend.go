@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/FranCalveyra/claude-desktop-swap/internal/account"
@@ -38,7 +37,7 @@ func (b *defaultTUIBackend) Load() (tuiSnapshot, error) {
 	return tuiSnapshot{
 		profiles: set.profiles,
 		current:  set.current,
-		status:   strings.ReplaceAll(statusLine(b.store, set.appData, set.liveExpiry, now), "⚠ ", "Warning: "),
+		status:   statusOf(b.store, set.appData, set.liveExpiry, now),
 		now:      now,
 	}, nil
 }

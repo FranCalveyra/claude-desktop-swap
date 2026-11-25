@@ -27,7 +27,7 @@ var cmdStatus = &cobra.Command{
 		}
 		now := time.Now()
 		expiry := liveSessionExpiry(appData, now)
-		fmt.Println(statusLine(store, appData, expiry, now))
+		fmt.Println(statusOf(store, appData, expiry, now).String())
 
 		if !statusCheck {
 			return nil
@@ -50,18 +50,31 @@ type liveMatcher interface {
 	MatchLive(string) (string, profile.Health)
 }
 
-func statusLine(store liveMatcher, appData string, expiry, now time.Time) string {
+type statusReport struct {
+	line     string
+	warnings []string
+}
+
+func (r statusReport) String() string {
+	s := r.line
+	for _, w := range r.warnings {
+		s += "\n⚠ " + w
+	}
+	return s
+}
+
+func statusOf(store liveMatcher, appData string, expiry, now time.Time) statusReport {
 	name, health := store.MatchLive(appData)
 	if name == "" {
-		return fmt.Sprintf("Active profile: unknown (live health: %s, session %s)", health, expiryLabel(expiry, now))
+		return statusReport{line: fmt.Sprintf("Active profile: unknown (live health: %s, session %s)", health, expiryLabel(expiry, now))}
 	}
 
-	line := fmt.Sprintf("Active profile: %s (%s, session %s)", name, health, expiryLabel(expiry, now))
+	r := statusReport{line: fmt.Sprintf("Active profile: %s (%s, session %s)", name, health, expiryLabel(expiry, now))}
 	switch profile.ClassifyRenewal(expiry, now) {
 	case profile.RenewalSoon:
-		line += fmt.Sprintf("\n⚠ Session expires in %s — keep using Claude on this profile to renew it.", until(expiry, now))
+		r.warnings = append(r.warnings, fmt.Sprintf("Session expires in %s — keep using Claude on this profile to renew it.", until(expiry, now)))
 	case profile.RenewalExpired:
-		line += "\n⚠ Session has expired — sign in again in Claude Desktop and re-save this profile."
+		r.warnings = append(r.warnings, "Session has expired — sign in again in Claude Desktop and re-save this profile.")
 	}
-	return line
+	return r
 }
