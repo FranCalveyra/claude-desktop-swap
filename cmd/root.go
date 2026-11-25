@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
 
@@ -21,6 +22,17 @@ var root = &cobra.Command{
 	Use:     "claude-desktop-swap",
 	Short:   "Switch between Claude Desktop accounts without logging out",
 	Version: Version,
+	Args:    cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
+			return cmd.Help()
+		}
+		return runTUI()
+	},
+}
+
+func isTerminal(f *os.File) bool {
+	return isatty.IsTerminal(f.Fd()) || isatty.IsCygwinTerminal(f.Fd())
 }
 
 func Execute() {

@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"io"
+	"os"
 
 	"github.com/FranCalveyra/claude-desktop-swap/internal/profile"
 	"github.com/spf13/cobra"
@@ -19,11 +21,18 @@ var cmdDelete = &cobra.Command{
 			return err
 		}
 
-		if err := store.Delete(name); err != nil {
-			return err
-		}
-
-		fmt.Printf("Profile %q deleted.\n", name)
-		return nil
+		return deleteProfileWith(name, store, os.Stdout)
 	},
+}
+
+type deleteStore interface {
+	Delete(string) error
+}
+
+func deleteProfileWith(name string, store deleteStore, out io.Writer) error {
+	if err := store.Delete(name); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "Profile %q deleted.\n", name)
+	return nil
 }
