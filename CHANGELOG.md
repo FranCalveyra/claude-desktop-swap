@@ -7,11 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.8.1] - 2026-08-13
-
 ### Added
-- A persistent Bubble Tea dashboard on bare `claude-desktop-swap` invocation, covering profile status, activation, save, add, and delete workflows.
+- A persistent Bubble Tea dashboard on bare `claude-desktop-swap` invocation in a terminal, covering profile status, activation, save, add, and delete workflows. Non-interactive invocations (pipes, CI, cron) still print help.
 - Confirmation, progress, result, and refresh states for interactive operations while retaining all existing scriptable subcommands.
+- Esc on the dashboard's add-account login prompt cancels the add and restores the previous session.
+
+### Fixed
+- The `use` picker showed the active profile's snapshot expiry instead of its live one, so it could report a session as expiring soon after the app had already renewed it.
+
 ## [0.8.0] - 2026-08-02
 
 ### Added

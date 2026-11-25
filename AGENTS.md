@@ -29,11 +29,13 @@ Switching accounts = swapping the `sessionKey`, `sessionKeyLC`, `routingHint`, `
 ## Commands
 
 ```
+claude-desktop-swap                    # interactive dashboard (prints help when not in a terminal)
 claude-desktop-swap save <name>        # snapshot current session as a named profile
 claude-desktop-swap add <name>         # add a new account interactively without manual logout
 claude-desktop-swap use [name]         # switch to a saved profile (kills + restarts Claude); no name = interactive picker
 claude-desktop-swap list               # list saved profiles
 claude-desktop-swap delete <name>      # remove a profile
+claude-desktop-swap status [--check]   # show the active profile; --check exits 1/2 when expiring/expired
 ```
 
 ## Rules for AI agents
