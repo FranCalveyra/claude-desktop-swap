@@ -8,21 +8,6 @@ import (
 
 	"github.com/FranCalveyra/claude-desktop-swap/internal/profile"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-)
-
-var (
-	pickerTitleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("14"))
-	pickerHeaderStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
-	pickerHelpStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
-	pickerBadgeStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	pickerCursorStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("14"))
-	pickerSelectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
-	pickerPromptStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
-	pickerProgressStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("14"))
-	pickerUsableStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	pickerWarningStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
-	pickerErrorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 )
 
 type pickerModel struct {
@@ -132,147 +117,18 @@ func (m *pickerModel) jumpToTypedRow() {
 
 func (m pickerModel) View() string {
 	var b strings.Builder
-	accountWidth, planWidth, healthWidth, expiresWidth, lastWidth := m.columnWidths()
-
 	b.WriteString("\n  ")
-	b.WriteString(pickerTitleStyle.Render("Select account to activate:"))
+	b.WriteString(uiTitleStyle.Render("Select account to activate:"))
 	b.WriteString("\n\n")
-	b.WriteString(pickerHeaderStyle.Render(fmt.Sprintf(
-		"       %s  %s  %s  %s  %s",
-		padRight("ACCOUNT", accountWidth),
-		padRight("PLAN", planWidth),
-		padRight("HEALTH", healthWidth),
-		padRight("EXPIRES", expiresWidth),
-		padRight("LAST", lastWidth),
-	)))
-	b.WriteString("\n")
-
-	for i, p := range m.profiles {
-		cursor := " "
-		if i == m.cursor {
-			cursor = pickerCursorStyle.Render(">")
-		}
-		rowNumber := fmt.Sprintf("%02d", i+1)
-		account := padRight(accountLabel(p), accountWidth)
-		plan := padRight(planLabel(p), planWidth)
-		last := padRight(relativeLastUsed(p.LastUsed), lastWidth)
-		if i == m.cursor {
-			rowNumber = pickerSelectedStyle.Render(rowNumber)
-			account = pickerSelectedStyle.Render(account)
-			plan = pickerSelectedStyle.Render(plan)
-			last = pickerSelectedStyle.Render(last)
-		}
-
-		badge := ""
-		if p.Name == m.current {
-			badge = "  " + pickerBadgeStyle.Render("[ACTIVE]")
-		}
-
-		fmt.Fprintf(&b,
-			"  %s %s %s  %s  %s  %s  %s%s\n",
-			cursor,
-			rowNumber,
-			account,
-			plan,
-			padRight(styledHealthLabel(p.ObservedHealth), healthWidth),
-			padRight(styledExpiryLabel(p, m.now), expiresWidth),
-			last,
-			badge,
-		)
-	}
-
+	profileTable{
+		profiles: m.profiles,
+		current:  m.current,
+		cursor:   m.cursor,
+		now:      m.now,
+		lead:     func(i int, _ profile.Meta) string { return fmt.Sprintf("%02d", i+1) },
+	}.render(&b)
 	b.WriteString("\n  ")
-	b.WriteString(pickerHelpStyle.Render("Keys: Up/Down or j/k, Enter select, 1-9 type, Backspace edit, Esc or q quit"))
+	b.WriteString(uiHelpStyle.Render("Keys: Up/Down or j/k, Enter select, 1-9 type, Backspace edit, Esc or q quit"))
 	b.WriteString("\n")
 	return b.String()
-}
-
-func (m pickerModel) columnWidths() (accountWidth, planWidth, healthWidth, expiresWidth, lastWidth int) {
-	accountWidth = lipgloss.Width("ACCOUNT")
-	planWidth = lipgloss.Width("PLAN")
-	healthWidth = lipgloss.Width("HEALTH")
-	expiresWidth = lipgloss.Width("EXPIRES")
-	lastWidth = lipgloss.Width("LAST")
-
-	for _, p := range m.profiles {
-		accountWidth = max(accountWidth, lipgloss.Width(accountLabel(p)))
-		planWidth = max(planWidth, lipgloss.Width(planLabel(p)))
-		healthWidth = max(healthWidth, lipgloss.Width(healthLabel(p.ObservedHealth)))
-		expiresWidth = max(expiresWidth, lipgloss.Width(asciiExpiryLabel(p, m.now)))
-		lastWidth = max(lastWidth, lipgloss.Width(relativeLastUsed(p.LastUsed)))
-	}
-
-	planWidth = max(planWidth, 8)
-	lastWidth = max(lastWidth, 6)
-	return accountWidth, planWidth, healthWidth, expiresWidth, lastWidth
-}
-
-func styledHealthLabel(health profile.Health) string {
-	label := healthLabel(health)
-	switch health {
-	case profile.HealthUsable:
-		return pickerUsableStyle.Render(label)
-	case profile.HealthExpired, profile.HealthMissing:
-		return pickerErrorStyle.Render(label)
-	case profile.HealthUnknown:
-		return pickerWarningStyle.Render(label)
-	default:
-		return label
-	}
-}
-
-func asciiExpiryLabel(p profile.Meta, now time.Time) string {
-	return strings.ReplaceAll(metaExpiryLabel(p, now), " ⚠", " !")
-}
-
-func styledExpiryLabel(p profile.Meta, now time.Time) string {
-	label := asciiExpiryLabel(p, now)
-	switch renewalFor(p, now) {
-	case profile.RenewalExpired:
-		return pickerErrorStyle.Render(label)
-	case profile.RenewalSoon:
-		return pickerWarningStyle.Render(label)
-	default:
-		return label
-	}
-}
-
-func accountLabel(p profile.Meta) string {
-	if p.Email != "" {
-		return p.Email
-	}
-	return p.Name
-}
-
-func planLabel(p profile.Meta) string {
-	if p.Plan == "" {
-		return "-"
-	}
-	return p.Plan
-}
-
-func relativeLastUsed(t time.Time) string {
-	if t.IsZero() {
-		return "Never"
-	}
-
-	elapsed := time.Since(t)
-	if elapsed < time.Minute {
-		return "Now"
-	}
-	if elapsed < time.Hour {
-		return fmt.Sprintf("%dm ago", int(elapsed.Minutes()))
-	}
-	if elapsed < 24*time.Hour {
-		return fmt.Sprintf("%dh ago", int(elapsed.Hours()))
-	}
-	return fmt.Sprintf("%dd ago", int(elapsed.Hours()/24))
-}
-
-func padRight(s string, width int) string {
-	padding := width - lipgloss.Width(s)
-	if padding <= 0 {
-		return s
-	}
-	return s + strings.Repeat(" ", padding)
 }
