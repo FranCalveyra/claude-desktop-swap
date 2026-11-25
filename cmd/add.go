@@ -95,6 +95,33 @@ func finishAddProfileWith(name, appData string, store addStore, p platform.Platf
 	return nil
 }
 
+func priorTrackedSession(store addStore, p platform.Platform) (string, error) {
+	appData, err := p.AppDataPath()
+	if err != nil {
+		return "", err
+	}
+	if !profile.HasActiveSession(appData) {
+		return "", nil
+	}
+	current, _ := store.Current()
+	return current, nil
+}
+
+// cancelAddProfileWith undoes beginAddProfileWith: prior is the profile that
+// was checkpointed before the wipe, or "" when there was no session to keep.
+func cancelAddProfileWith(prior, appData string, store addStore, p platform.Platform) error {
+	if err := p.KillApp(); err != nil {
+		return err
+	}
+	if prior == "" {
+		return store.Wipe(appData)
+	}
+	if err := store.Restore(prior, appData); err != nil {
+		return err
+	}
+	return p.LaunchApp()
+}
+
 type trackedCheckpointer interface {
 	Current() (string, error)
 	Checkpoint(string, string) error

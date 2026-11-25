@@ -20,7 +20,11 @@ func (m tuiModel) View() string {
 	case tuiAddLogin:
 		return m.addLoginView()
 	default:
-		return panelView("Claude Desktop Swap", m.message, "Please wait. Ctrl+C quits.", pickerProgressStyle)
+		help := "Please wait. Ctrl+C quits."
+		if m.running() {
+			help = "Please wait. Quitting is disabled until this finishes."
+		}
+		return panelView("Claude Desktop Swap", m.message, help, pickerProgressStyle)
 	}
 }
 
@@ -122,7 +126,11 @@ func (m tuiModel) confirmView() string {
 	case tuiActionDelete:
 		prompt = fmt.Sprintf("Permanently delete profile %q?", m.name)
 	}
-	return panelView("Confirm", prompt, "Press y or Enter to continue. Press n or Esc to cancel. q quits.", pickerPromptStyle)
+	help := "Press y or Enter to continue. Press n or Esc to cancel. q quits."
+	if m.pending == tuiActionDelete {
+		help = "Press y to delete. Press n or Esc to cancel. q quits."
+	}
+	return panelView("Confirm", prompt, help, pickerPromptStyle)
 }
 
 func (m tuiModel) resultView() string {
@@ -135,7 +143,7 @@ func (m tuiModel) resultView() string {
 
 func (m tuiModel) addLoginView() string {
 	message := m.message + " Log in there, then return here."
-	return panelView("Add account", message, "Press Enter after login to save the profile. q quits.", pickerPromptStyle)
+	return panelView("Add account", message, "Press Enter after login to save the profile. Esc cancels and restores the previous session.", pickerPromptStyle)
 }
 
 func panelView(title, message, help string, messageStyle lipgloss.Style) string {
@@ -162,6 +170,8 @@ func actionLabel(action tuiAction) string {
 		return "Save"
 	case tuiActionAdd, tuiActionFinishAdd:
 		return "Add"
+	case tuiActionCancelAdd:
+		return "Cancel add"
 	case tuiActionDelete:
 		return "Delete"
 	default:
@@ -179,6 +189,8 @@ func progressMessage(action tuiAction, name string) string {
 		return fmt.Sprintf("Preparing %q for login...", name)
 	case tuiActionFinishAdd:
 		return fmt.Sprintf("Saving %q...", name)
+	case tuiActionCancelAdd:
+		return "Cancelling and restoring the previous session..."
 	case tuiActionDelete:
 		return fmt.Sprintf("Deleting %q...", name)
 	default:
@@ -194,6 +206,8 @@ func successMessage(action tuiAction, name string) string {
 		return fmt.Sprintf("Profile %q saved.", name)
 	case tuiActionFinishAdd:
 		return fmt.Sprintf("Profile %q added.", name)
+	case tuiActionCancelAdd:
+		return fmt.Sprintf("Adding %q was cancelled. The previous session was restored.", name)
 	case tuiActionDelete:
 		return fmt.Sprintf("Profile %q deleted.", name)
 	default:

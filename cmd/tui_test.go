@@ -231,6 +231,62 @@ func TestTUIOperationErrorBecomesResult(t *testing.T) {
 	}
 }
 
+func TestTUIDeleteIgnoresEnterAndNeedsY(t *testing.T) {
+	backend := &fakeTUIBackend{}
+	m := tuiModelWithSnapshot(backend, tuiSnapshot{profiles: []profile.Meta{{Name: "work"}}})
+	m.openConfirmation(tuiActionDelete, "work")
+
+	updated, command := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(tuiModel)
+	if m.mode != tuiConfirm || command != nil {
+		t.Fatalf("enter confirmed delete: mode=%v command=%v", m.mode, command)
+	}
+	updated, command = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m = updated.(tuiModel)
+	if m.mode != tuiProgress || command == nil {
+		t.Fatalf("y did not confirm delete: mode=%v command=%v", m.mode, command)
+	}
+}
+
+func TestTUIIgnoresQuitWhileOperationRuns(t *testing.T) {
+	m := tuiModelWithSnapshot(&fakeTUIBackend{}, tuiSnapshot{})
+	m.mode = tuiProgress
+	m.pending = tuiActionActivate
+
+	if _, command := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC}); command != nil {
+		t.Fatalf("ctrl+c quit mid-operation")
+	}
+
+	m.pending = tuiActionNone
+	if _, command := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC}); command == nil {
+		t.Fatalf("ctrl+c did not quit while loading")
+	}
+}
+
+func TestTUIAddLoginCancelsInsteadOfQuitting(t *testing.T) {
+	backend := &fakeTUIBackend{}
+	m := tuiModelWithSnapshot(backend, tuiSnapshot{})
+	m.mode = tuiAddLogin
+	m.name = "personal"
+
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyCtrlC}, {Type: tea.KeyRunes, Runes: []rune{'q'}}} {
+		if _, command := m.Update(key); command != nil {
+			t.Fatalf("%q left the add login prompt", key.String())
+		}
+	}
+
+	updated, command := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(tuiModel)
+	if m.mode != tuiProgress || command == nil {
+		t.Fatalf("esc did not start cancel: mode=%v command=%v", m.mode, command)
+	}
+	updated, _ = m.Update(command())
+	m = updated.(tuiModel)
+	if len(backend.calls) != 1 || backend.calls[0] != "cancel-add" || m.mode != tuiResult {
+		t.Fatalf("cancel not run: calls=%v mode=%v", backend.calls, m.mode)
+	}
+}
+
 type fakeTUIBackend struct {
 	snapshot tuiSnapshot
 	err      error
@@ -259,6 +315,11 @@ func (b *fakeTUIBackend) BeginAdd(name string) error {
 
 func (b *fakeTUIBackend) FinishAdd(name string) error {
 	b.calls = append(b.calls, "finish-add:"+name)
+	return b.err
+}
+
+func (b *fakeTUIBackend) CancelAdd() error {
+	b.calls = append(b.calls, "cancel-add")
 	return b.err
 }
 

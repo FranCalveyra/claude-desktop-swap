@@ -29,6 +29,7 @@ const (
 	tuiActionAdd
 	tuiActionFinishAdd
 	tuiActionDelete
+	tuiActionCancelAdd
 )
 
 type tuiSnapshot struct {
@@ -55,6 +56,7 @@ type tuiBackend interface {
 	Save(string) error
 	BeginAdd(string) error
 	FinishAdd(string) error
+	CancelAdd() error
 	Delete(string) error
 }
 
@@ -109,7 +111,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tuiOperationMsg:
 		return m.operationFinished(msg)
 	case tea.KeyMsg:
-		if msg.String() == "ctrl+c" {
+		// Quitting mid-operation can kill the process between KillApp and
+		// Restore, and quitting at the add login prompt leaves Claude wiped.
+		if msg.String() == "ctrl+c" && !m.running() && m.mode != tuiAddLogin {
 			return m, tea.Quit
 		}
 		switch m.mode {
@@ -192,11 +196,15 @@ func (m tuiModel) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m tuiModel) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "y", "enter":
+	key := msg.String()
+	// Delete is irreversible, so it takes a deliberate "y": a second Enter
+	// from selecting the row must not confirm it.
+	if key == "y" || (key == "enter" && m.pending != tuiActionDelete) {
 		m.mode = tuiProgress
 		m.message = progressMessage(m.pending, m.name)
 		return m, runTUIActionCmd(m.backend, m.pending, m.name)
+	}
+	switch key {
 	case "n", "esc":
 		m.resetDashboard()
 	case "q":
@@ -209,6 +217,7 @@ func (m tuiModel) updateResult(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter", "r":
 		m.mode = tuiProgress
+		m.pending = tuiActionNone
 		m.message = "Refreshing profiles..."
 		return m, loadTUISnapshotCmd(m.backend)
 	case "q":
@@ -224,8 +233,11 @@ func (m tuiModel) updateAddLogin(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.pending = tuiActionFinishAdd
 		m.message = progressMessage(tuiActionFinishAdd, m.name)
 		return m, runTUIActionCmd(m.backend, tuiActionFinishAdd, m.name)
-	case "q":
-		return m, tea.Quit
+	case "esc":
+		m.mode = tuiProgress
+		m.pending = tuiActionCancelAdd
+		m.message = progressMessage(tuiActionCancelAdd, m.name)
+		return m, runTUIActionCmd(m.backend, tuiActionCancelAdd, m.name)
 	}
 	return m, nil
 }
@@ -291,6 +303,10 @@ func (m *tuiModel) resetDashboard() {
 	m.failed = false
 }
 
+func (m tuiModel) running() bool {
+	return m.mode == tuiProgress && m.pending != tuiActionNone
+}
+
 func (m tuiModel) selected() (profile.Meta, bool) {
 	if m.cursor < 0 || m.cursor >= len(m.profiles) {
 		return profile.Meta{}, false
@@ -317,6 +333,8 @@ func runTUIActionCmd(backend tuiBackend, action tuiAction, name string) tea.Cmd 
 			err = backend.BeginAdd(name)
 		case tuiActionFinishAdd:
 			err = backend.FinishAdd(name)
+		case tuiActionCancelAdd:
+			err = backend.CancelAdd()
 		case tuiActionDelete:
 			err = backend.Delete(name)
 		}

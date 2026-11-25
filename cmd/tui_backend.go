@@ -15,6 +15,7 @@ type defaultTUIBackend struct {
 	store      *profile.Store
 	platform   platform.Platform
 	addAppData string
+	addPrior   string
 }
 
 func newDefaultTUIBackend() (*defaultTUIBackend, error) {
@@ -61,9 +62,25 @@ func (b *defaultTUIBackend) Save(name string) error {
 }
 
 func (b *defaultTUIBackend) BeginAdd(name string) error {
+	prior, err := priorTrackedSession(b.store, b.platform)
+	if err != nil {
+		return err
+	}
 	appData, err := beginAddProfileWith(name, b.store, b.platform, io.Discard)
 	if err == nil {
 		b.addAppData = appData
+		b.addPrior = prior
+	}
+	return err
+}
+
+func (b *defaultTUIBackend) CancelAdd() error {
+	if b.addAppData == "" {
+		return fmt.Errorf("add session was not prepared")
+	}
+	err := cancelAddProfileWith(b.addPrior, b.addAppData, b.store, b.platform)
+	if err == nil {
+		b.addAppData, b.addPrior = "", ""
 	}
 	return err
 }
