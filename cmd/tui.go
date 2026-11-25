@@ -199,10 +199,8 @@ func (m tuiModel) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	// Delete is irreversible, so it takes a deliberate "y": a second Enter
 	// from selecting the row must not confirm it.
-	if key == "y" || (key == "enter" && m.pending != tuiActionDelete) {
-		m.mode = tuiProgress
-		m.message = progressMessage(m.pending, m.name)
-		return m, runTUIActionCmd(m.backend, m.pending, m.name)
+	if key == "y" || (key == "enter" && !tuiActions[m.pending].destructive) {
+		return m.start(m.pending)
 	}
 	switch key {
 	case "n", "esc":
@@ -229,23 +227,24 @@ func (m tuiModel) updateResult(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m tuiModel) updateAddLogin(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
-		m.mode = tuiProgress
-		m.pending = tuiActionFinishAdd
-		m.message = progressMessage(tuiActionFinishAdd, m.name)
-		return m, runTUIActionCmd(m.backend, tuiActionFinishAdd, m.name)
+		return m.start(tuiActionFinishAdd)
 	case "esc":
-		m.mode = tuiProgress
-		m.pending = tuiActionCancelAdd
-		m.message = progressMessage(tuiActionCancelAdd, m.name)
-		return m, runTUIActionCmd(m.backend, tuiActionCancelAdd, m.name)
+		return m.start(tuiActionCancelAdd)
 	}
 	return m, nil
+}
+
+func (m tuiModel) start(action tuiAction) (tea.Model, tea.Cmd) {
+	m.mode = tuiProgress
+	m.pending = action
+	m.message = fmt.Sprintf(tuiActions[action].progress, m.name)
+	return m, runTUIActionCmd(m.backend, action, m.name)
 }
 
 func (m tuiModel) operationFinished(msg tuiOperationMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
 		m.mode = tuiResult
-		m.message = actionLabel(msg.action) + " failed: " + msg.err.Error()
+		m.message = tuiActions[msg.action].label + " failed: " + msg.err.Error()
 		m.failed = true
 		return m, nil
 	}
@@ -257,7 +256,7 @@ func (m tuiModel) operationFinished(msg tuiOperationMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.mode = tuiResult
-	m.message = successMessage(msg.action, msg.name)
+	m.message = fmt.Sprintf(tuiActions[msg.action].success, msg.name)
 	m.failed = false
 	return m, nil
 }
@@ -323,21 +322,6 @@ func loadTUISnapshotCmd(backend tuiBackend) tea.Cmd {
 
 func runTUIActionCmd(backend tuiBackend, action tuiAction, name string) tea.Cmd {
 	return func() tea.Msg {
-		var err error
-		switch action {
-		case tuiActionActivate:
-			err = backend.Activate(name)
-		case tuiActionSave:
-			err = backend.Save(name)
-		case tuiActionAdd:
-			err = backend.BeginAdd(name)
-		case tuiActionFinishAdd:
-			err = backend.FinishAdd(name)
-		case tuiActionCancelAdd:
-			err = backend.CancelAdd()
-		case tuiActionDelete:
-			err = backend.Delete(name)
-		}
-		return tuiOperationMsg{action: action, name: name, err: err}
+		return tuiOperationMsg{action: action, name: name, err: tuiActions[action].run(backend, name)}
 	}
 }

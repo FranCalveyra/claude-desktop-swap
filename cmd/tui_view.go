@@ -60,26 +60,16 @@ func (m tuiModel) dashboardView() string {
 }
 
 func (m tuiModel) inputView() string {
-	return panelView("Claude Desktop Swap", fmt.Sprintf("%s profile name: %s", actionLabel(m.pending), m.name), "Enter continues. Esc cancels.", uiPromptStyle)
+	return panelView("Claude Desktop Swap", fmt.Sprintf("%s profile name: %s", tuiActions[m.pending].label, m.name), "Enter continues. Esc cancels.", uiPromptStyle)
 }
 
 func (m tuiModel) confirmView() string {
-	var prompt string
-	switch m.pending {
-	case tuiActionActivate:
-		prompt = fmt.Sprintf("Activate %q? Claude Desktop will stop while the account is switched.", m.name)
-	case tuiActionSave:
-		prompt = fmt.Sprintf("Save the current session as %q? An existing profile will be replaced.", m.name)
-	case tuiActionAdd:
-		prompt = fmt.Sprintf("Add %q? Current session state will be checkpointed before Claude opens signed out.", m.name)
-	case tuiActionDelete:
-		prompt = fmt.Sprintf("Permanently delete profile %q?", m.name)
-	}
+	spec := tuiActions[m.pending]
 	help := "Press y or Enter to continue. Press n or Esc to cancel. q quits."
-	if m.pending == tuiActionDelete {
-		help = "Press y to delete. Press n or Esc to cancel. q quits."
+	if spec.destructive {
+		help = "Press y to " + strings.ToLower(spec.label) + ". Press n or Esc to cancel. q quits."
 	}
-	return panelView("Confirm", prompt, help, uiPromptStyle)
+	return panelView("Confirm", fmt.Sprintf(spec.confirm, m.name), help, uiPromptStyle)
 }
 
 func (m tuiModel) resultView() string {
@@ -105,57 +95,4 @@ func styledStatus(r statusReport) string {
 		lines = append(lines, uiWarningStyle.Render("Warning: "+w))
 	}
 	return strings.Join(lines, "\n  ")
-}
-
-func actionLabel(action tuiAction) string {
-	switch action {
-	case tuiActionActivate:
-		return "Activate"
-	case tuiActionSave:
-		return "Save"
-	case tuiActionAdd, tuiActionFinishAdd:
-		return "Add"
-	case tuiActionCancelAdd:
-		return "Cancel add"
-	case tuiActionDelete:
-		return "Delete"
-	default:
-		return "Operation"
-	}
-}
-
-func progressMessage(action tuiAction, name string) string {
-	switch action {
-	case tuiActionActivate:
-		return fmt.Sprintf("Activating %q...", name)
-	case tuiActionSave:
-		return fmt.Sprintf("Saving %q...", name)
-	case tuiActionAdd:
-		return fmt.Sprintf("Preparing %q for login...", name)
-	case tuiActionFinishAdd:
-		return fmt.Sprintf("Saving %q...", name)
-	case tuiActionCancelAdd:
-		return "Cancelling and restoring the previous session..."
-	case tuiActionDelete:
-		return fmt.Sprintf("Deleting %q...", name)
-	default:
-		return "Working..."
-	}
-}
-
-func successMessage(action tuiAction, name string) string {
-	switch action {
-	case tuiActionActivate:
-		return fmt.Sprintf("Profile %q activated.", name)
-	case tuiActionSave:
-		return fmt.Sprintf("Profile %q saved.", name)
-	case tuiActionFinishAdd:
-		return fmt.Sprintf("Profile %q added.", name)
-	case tuiActionCancelAdd:
-		return fmt.Sprintf("Adding %q was cancelled. The previous session was restored.", name)
-	case tuiActionDelete:
-		return fmt.Sprintf("Profile %q deleted.", name)
-	default:
-		return "Operation completed."
-	}
 }
