@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/FranCalveyra/claude-desktop-swap/internal/account"
@@ -27,28 +26,18 @@ func newDefaultTUIBackend() (*defaultTUIBackend, error) {
 }
 
 func (b *defaultTUIBackend) Load() (tuiSnapshot, error) {
-	profiles, err := b.store.List()
-	if err != nil {
-		return tuiSnapshot{}, err
-	}
-	appData, err := b.platform.AppDataPath()
-	if err != nil {
+	if _, err := b.platform.AppDataPath(); err != nil {
 		return tuiSnapshot{}, err
 	}
 	now := time.Now()
-	current, _ := b.store.MatchLive(appData)
-	if live := liveSessionExpiry(appData, now); current != "" && !live.IsZero() {
-		for i := range profiles {
-			if profiles[i].Name == current {
-				profiles[i].SessionExpiresAt = live
-			}
-		}
+	set, err := loadProfiles(b.store, b.platform, now)
+	if err != nil {
+		return tuiSnapshot{}, err
 	}
-	enrichLiveAccounts(b.store, profiles)
 	return tuiSnapshot{
-		profiles: profiles,
-		current:  current,
-		status:   strings.ReplaceAll(statusLine(b.store, appData, liveSessionExpiry(appData, now), now), "⚠ ", "Warning: "),
+		profiles: set.profiles,
+		current:  set.current,
+		status:   statusOf(b.store, set.appData, set.liveExpiry, now),
 		now:      now,
 	}, nil
 }

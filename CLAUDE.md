@@ -49,15 +49,21 @@ correct account.
 - No daemon, no background process — swap is a one-shot operation
 - Cross-platform paths resolved at runtime (macOS / Windows)
 
-## Commands (planned)
+## Commands
 
 ```
+claude-desktop-swap                    # interactive dashboard (prints help when not in a terminal)
 claude-desktop-swap save <name>        # snapshot current session as a named profile
-claude-desktop-swap use <name>         # switch to a saved profile (kills + restarts Claude)
+claude-desktop-swap add <name>         # add a new account interactively without manual logout
+claude-desktop-swap use [name]         # switch to a saved profile (kills + restarts Claude); no name = picker
 claude-desktop-swap list               # list saved profiles
 claude-desktop-swap delete <name>      # remove a profile
-claude-desktop-swap status             # show which profile is active (if trackable)
+claude-desktop-swap status [--check]   # show the active profile; --check exits 1/2 when expiring/expired
 ```
+
+The picker and the dashboard render the same `profileTable` (`cmd/table.go`),
+and every profile view loads through `loadProfiles` (`cmd/profiles.go`), which
+applies the live-expiry override. Add a view through those, not beside them.
 
 ## Rules for Claude
 

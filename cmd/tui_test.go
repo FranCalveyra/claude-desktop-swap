@@ -22,7 +22,7 @@ func TestTUIDashboardDoesNotRenderSecretMetadata(t *testing.T) {
 			AccountUUID:    "sessionKey-secret-value",
 		}},
 		current: "work",
-		status:  "Active profile: work",
+		status:  statusReport{line: "Active profile: work"},
 	})
 
 	view := m.View()
@@ -46,7 +46,7 @@ func TestTUIDashboardUsesCyanHierarchyAndSemanticColors(t *testing.T) {
 			{Name: "expired", ObservedHealth: profile.HealthExpired},
 			{Name: "unknown", ObservedHealth: profile.HealthUnknown},
 		},
-		status: "Active profile: usable\nWarning: session expires soon",
+		status: statusReport{line: "Active profile: usable", warnings: []string{"session expires soon"}},
 	})
 
 	view := m.View()
@@ -191,7 +191,7 @@ func TestTUIAddWaitsForExternalLoginBeforeFinishing(t *testing.T) {
 }
 
 func TestTUIResultRefreshesOnlyAfterAcknowledgement(t *testing.T) {
-	backend := &fakeTUIBackend{snapshot: tuiSnapshot{status: "refreshed"}}
+	backend := &fakeTUIBackend{snapshot: tuiSnapshot{status: statusReport{line: "refreshed"}}}
 	m := tuiModelWithSnapshot(backend, tuiSnapshot{})
 	m.mode = tuiProgress
 	m.pending = tuiActionDelete
@@ -209,8 +209,8 @@ func TestTUIResultRefreshesOnlyAfterAcknowledgement(t *testing.T) {
 	}
 	updated, _ = m.Update(command())
 	m = updated.(tuiModel)
-	if m.mode != tuiDashboard || m.status != "refreshed" {
-		t.Fatalf("dashboard not refreshed: mode=%v status=%q", m.mode, m.status)
+	if m.mode != tuiDashboard || m.status.line != "refreshed" {
+		t.Fatalf("dashboard not refreshed: mode=%v status=%q", m.mode, m.status.line)
 	}
 }
 

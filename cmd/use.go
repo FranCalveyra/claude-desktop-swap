@@ -39,21 +39,15 @@ func profileNameFromArgs(args []string, store *profile.Store) (string, error) {
 		return args[0], nil
 	}
 
-	profiles, err := store.List()
+	set, err := loadProfiles(store, platform.Current(), time.Now())
 	if err != nil {
 		return "", err
 	}
-	if len(profiles) == 0 {
+	if len(set.profiles) == 0 {
 		fmt.Println("No profiles saved. Run 'claude-desktop-swap save <name>' to create one.")
 		return "", nil
 	}
-
-	current := ""
-	if appData, err := platform.Current().AppDataPath(); err == nil {
-		current, _ = store.MatchLive(appData)
-	}
-	enrichLiveAccounts(store, profiles)
-	return runPicker(profiles, current)
+	return runPicker(set.profiles, set.current)
 }
 
 func switchProfile(name string, store *profile.Store) error {

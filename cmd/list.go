@@ -21,29 +21,17 @@ var cmdList = &cobra.Command{
 			return err
 		}
 
-		profiles, err := store.List()
+		now := time.Now()
+		set, err := loadProfiles(store, platform.Current(), now)
 		if err != nil {
 			return err
 		}
-
+		profiles, current := set.profiles, set.current
 		if len(profiles) == 0 {
 			fmt.Println("No profiles saved. Run 'claude-desktop-swap save <name>' to create one.")
 			return nil
 		}
 
-		now := time.Now()
-		current := ""
-		if appData, err := platform.Current().AppDataPath(); err == nil {
-			current, _ = store.MatchLive(appData)
-			if live := liveSessionExpiry(appData, now); current != "" && !live.IsZero() {
-				for i := range profiles {
-					if profiles[i].Name == current {
-						profiles[i].SessionExpiresAt = live
-					}
-				}
-			}
-		}
-		enrichLiveAccounts(store, profiles)
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "  NAME\tACCOUNT\tPLAN\tHEALTH\tEXPIRES\tCREATED\tLAST USED")
 		for _, p := range profiles {

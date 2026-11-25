@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/FranCalveyra/claude-desktop-swap/internal/profile"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -24,193 +25,74 @@ func (m tuiModel) View() string {
 		if m.running() {
 			help = "Please wait. Quitting is disabled until this finishes."
 		}
-		return panelView("Claude Desktop Swap", m.message, help, pickerProgressStyle)
+		return panelView("Claude Desktop Swap", m.message, help, uiProgressStyle)
 	}
 }
 
 func (m tuiModel) dashboardView() string {
 	var b strings.Builder
-	profileWidth, accountWidth, planWidth, healthWidth, expiresWidth, lastWidth := m.dashboardWidths()
-
 	b.WriteString("\n  ")
-	b.WriteString(pickerTitleStyle.Render("Claude Desktop Swap"))
+	b.WriteString(uiTitleStyle.Render("Claude Desktop Swap"))
 	b.WriteString("\n  ")
 	b.WriteString(styledStatus(m.status))
 	b.WriteString("\n\n  ")
-	b.WriteString(pickerHeaderStyle.Render("Profiles"))
-	b.WriteString("\n  ")
-	b.WriteString(pickerHeaderStyle.Render(fmt.Sprintf(
-		"     %s  %s  %s  %s  %s  %s",
-		padRight("PROFILE", profileWidth),
-		padRight("ACCOUNT", accountWidth),
-		padRight("PLAN", planWidth),
-		padRight("HEALTH", healthWidth),
-		padRight("EXPIRES", expiresWidth),
-		padRight("LAST", lastWidth),
-	)))
+	b.WriteString(uiHeaderStyle.Render("Profiles"))
 	b.WriteString("\n")
+	profileTable{
+		profiles:  m.profiles,
+		current:   m.current,
+		cursor:    m.cursor,
+		now:       m.now,
+		leadTitle: "PROFILE",
+		lead:      func(_ int, p profile.Meta) string { return p.Name },
+	}.render(&b)
 
 	if len(m.profiles) == 0 {
 		b.WriteString("\n  ")
-		b.WriteString(pickerPromptStyle.Render("No profiles saved. Press s to save the current session or a to add an account."))
+		b.WriteString(uiPromptStyle.Render("No profiles saved. Press s to save the current session or a to add an account."))
 		b.WriteString("\n")
-	}
-	for i, p := range m.profiles {
-		cursor := " "
-		if i == m.cursor {
-			cursor = pickerCursorStyle.Render(">")
-		}
-		name := padRight(p.Name, profileWidth)
-		account := padRight(accountLabel(p), accountWidth)
-		plan := padRight(planLabel(p), planWidth)
-		last := padRight(relativeLastUsed(p.LastUsed), lastWidth)
-		if i == m.cursor {
-			name = pickerSelectedStyle.Render(name)
-			account = pickerSelectedStyle.Render(account)
-			plan = pickerSelectedStyle.Render(plan)
-			last = pickerSelectedStyle.Render(last)
-		}
-		badge := ""
-		if p.Name == m.current {
-			badge = "  " + pickerBadgeStyle.Render("[ACTIVE]")
-		}
-		fmt.Fprintf(&b, "  %s  %s  %s  %s  %s  %s  %s%s\n",
-			cursor,
-			name,
-			account,
-			plan,
-			padRight(styledHealthLabel(p.ObservedHealth), healthWidth),
-			padRight(styledExpiryLabel(p, m.now), expiresWidth),
-			last,
-			badge,
-		)
 	}
 
 	b.WriteString("\n  ")
-	b.WriteString(pickerHelpStyle.Render("Keys: Up/Down or j/k, Enter/u activate, s save, a add, d delete, r refresh, q quit"))
+	b.WriteString(uiHelpStyle.Render("Keys: Up/Down or j/k, Enter/u activate, s save, a add, d delete, r refresh, q quit"))
 	b.WriteString("\n")
 	return b.String()
 }
 
-func (m tuiModel) dashboardWidths() (profileWidth, accountWidth, planWidth, healthWidth, expiresWidth, lastWidth int) {
-	profileWidth = lipgloss.Width("PROFILE")
-	accountWidth = lipgloss.Width("ACCOUNT")
-	planWidth = lipgloss.Width("PLAN")
-	healthWidth = lipgloss.Width("HEALTH")
-	expiresWidth = lipgloss.Width("EXPIRES")
-	lastWidth = lipgloss.Width("LAST")
-	for _, p := range m.profiles {
-		profileWidth = max(profileWidth, lipgloss.Width(p.Name))
-		accountWidth = max(accountWidth, lipgloss.Width(accountLabel(p)))
-		planWidth = max(planWidth, lipgloss.Width(planLabel(p)))
-		healthWidth = max(healthWidth, lipgloss.Width(healthLabel(p.ObservedHealth)))
-		expiresWidth = max(expiresWidth, lipgloss.Width(asciiExpiryLabel(p, m.now)))
-		lastWidth = max(lastWidth, lipgloss.Width(relativeLastUsed(p.LastUsed)))
-	}
-	return profileWidth, accountWidth, planWidth, healthWidth, expiresWidth, lastWidth
-}
-
 func (m tuiModel) inputView() string {
-	return panelView("Claude Desktop Swap", fmt.Sprintf("%s profile name: %s", actionLabel(m.pending), m.name), "Enter continues. Esc cancels.", pickerPromptStyle)
+	return panelView("Claude Desktop Swap", fmt.Sprintf("%s profile name: %s", tuiActions[m.pending].label, m.name), "Enter continues. Esc cancels.", uiPromptStyle)
 }
 
 func (m tuiModel) confirmView() string {
-	var prompt string
-	switch m.pending {
-	case tuiActionActivate:
-		prompt = fmt.Sprintf("Activate %q? Claude Desktop will stop while the account is switched.", m.name)
-	case tuiActionSave:
-		prompt = fmt.Sprintf("Save the current session as %q? An existing profile will be replaced.", m.name)
-	case tuiActionAdd:
-		prompt = fmt.Sprintf("Add %q? Current session state will be checkpointed before Claude opens signed out.", m.name)
-	case tuiActionDelete:
-		prompt = fmt.Sprintf("Permanently delete profile %q?", m.name)
-	}
+	spec := tuiActions[m.pending]
 	help := "Press y or Enter to continue. Press n or Esc to cancel. q quits."
-	if m.pending == tuiActionDelete {
-		help = "Press y to delete. Press n or Esc to cancel. q quits."
+	if spec.destructive {
+		help = "Press y to " + strings.ToLower(spec.label) + ". Press n or Esc to cancel. q quits."
 	}
-	return panelView("Confirm", prompt, help, pickerPromptStyle)
+	return panelView("Confirm", fmt.Sprintf(spec.confirm, m.name), help, uiPromptStyle)
 }
 
 func (m tuiModel) resultView() string {
-	style := pickerUsableStyle
+	style := uiUsableStyle
 	if m.failed {
-		style = pickerErrorStyle
+		style = uiErrorStyle
 	}
 	return panelView("Result", m.message, "Press Enter to refresh the dashboard. q quits.", style)
 }
 
 func (m tuiModel) addLoginView() string {
 	message := m.message + " Log in there, then return here."
-	return panelView("Add account", message, "Press Enter after login to save the profile. Esc cancels and restores the previous session.", pickerPromptStyle)
+	return panelView("Add account", message, "Press Enter after login to save the profile. Esc cancels and restores the previous session.", uiPromptStyle)
 }
 
 func panelView(title, message, help string, messageStyle lipgloss.Style) string {
-	return "\n  " + pickerTitleStyle.Render(title) + "\n\n  " + messageStyle.Render(message) + "\n\n  " + pickerHelpStyle.Render(help) + "\n"
+	return "\n  " + uiTitleStyle.Render(title) + "\n\n  " + messageStyle.Render(message) + "\n\n  " + uiHelpStyle.Render(help) + "\n"
 }
 
-func styledStatus(status string) string {
-	lines := strings.Split(status, "\n")
-	for i, line := range lines {
-		if strings.HasPrefix(line, "Warning:") {
-			lines[i] = pickerWarningStyle.Render(line)
-		} else {
-			lines[i] = pickerPromptStyle.Render(line)
-		}
+func styledStatus(r statusReport) string {
+	lines := []string{uiPromptStyle.Render(r.line)}
+	for _, w := range r.warnings {
+		lines = append(lines, uiWarningStyle.Render("Warning: "+w))
 	}
 	return strings.Join(lines, "\n  ")
-}
-
-func actionLabel(action tuiAction) string {
-	switch action {
-	case tuiActionActivate:
-		return "Activate"
-	case tuiActionSave:
-		return "Save"
-	case tuiActionAdd, tuiActionFinishAdd:
-		return "Add"
-	case tuiActionCancelAdd:
-		return "Cancel add"
-	case tuiActionDelete:
-		return "Delete"
-	default:
-		return "Operation"
-	}
-}
-
-func progressMessage(action tuiAction, name string) string {
-	switch action {
-	case tuiActionActivate:
-		return fmt.Sprintf("Activating %q...", name)
-	case tuiActionSave:
-		return fmt.Sprintf("Saving %q...", name)
-	case tuiActionAdd:
-		return fmt.Sprintf("Preparing %q for login...", name)
-	case tuiActionFinishAdd:
-		return fmt.Sprintf("Saving %q...", name)
-	case tuiActionCancelAdd:
-		return "Cancelling and restoring the previous session..."
-	case tuiActionDelete:
-		return fmt.Sprintf("Deleting %q...", name)
-	default:
-		return "Working..."
-	}
-}
-
-func successMessage(action tuiAction, name string) string {
-	switch action {
-	case tuiActionActivate:
-		return fmt.Sprintf("Profile %q activated.", name)
-	case tuiActionSave:
-		return fmt.Sprintf("Profile %q saved.", name)
-	case tuiActionFinishAdd:
-		return fmt.Sprintf("Profile %q added.", name)
-	case tuiActionCancelAdd:
-		return fmt.Sprintf("Adding %q was cancelled. The previous session was restored.", name)
-	case tuiActionDelete:
-		return fmt.Sprintf("Profile %q deleted.", name)
-	default:
-		return "Operation completed."
-	}
 }
